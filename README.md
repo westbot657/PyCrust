@@ -1,6 +1,8 @@
 # PyCrust
 A sandboxed Python to wasm32-wasi compiler written in rust
 
+This is currently under development and is far from usable.
+
 
 Feature checklist
 - [ ] Correctly lex and parse python

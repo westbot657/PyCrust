@@ -1,6 +1,23 @@
 [package]
-name = "bin"
+name = "pycrust"
 version = "0.1.0"
 edition = "2024"
+description = "A sandboxed python interpreter (and soon to be compiler)"
+license = "MIT"
+readme = "README.md"
+
+[features]
+default = ["lexer", "parser", "interpreter"]
+lexer = ["dep:regex"]
+parser = ["lexer"]
+interpreter = ["lexer", "parser"]
+compiler = ["lexer", "parser"]
+serial = ["dep:serde", "dep:serde_json"]
+
 
 [dependencies]
+
+regex = { version = "1.12.2", optional = true }
+
+serde = { version = "1.0.228", optional = true }
+serde_json = { version = "1.0.145", optional = true }
