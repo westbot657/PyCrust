@@ -6,10 +6,18 @@ pub struct TextPosition {
     row: usize,
 }
 
+pub struct TextSpan {
+    start: TextPosition,
+    end: TextPosition,
+}
 
-pub struct Token<'t> {
-    content: &'t str,
+pub struct Token {
+    span: TextSpan,
+}
 
+pub struct TokenRef<'t> {
+    token: &'t Token,
+    content: &'t str
 }
 
 
