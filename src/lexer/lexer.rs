@@ -74,7 +74,14 @@ impl Lexer {
 
         let word_re = Regex::new(r#"(?x)^[a-zA-Z_][a-zA-Z0-9_]*\b"#)?;
         let newlines_re = Regex::new(r#"(?x)^\n\s*"#)?;
-        let space_re = Regex::new(r#" +"#)?;
+        let space_re = Regex::new(r#"^ +"#)?;
+
+        let string_re = Regex::new(
+            r#"(?x)^(?:
+                "(?:\\.|[^"])"
+                | '(?:\\.|[^'])'
+            )"#
+        )?;
 
         let length = source.len();
 
@@ -100,6 +107,9 @@ impl Lexer {
                 self.position.increment(2);
                 let mut tokens = self.lex_f_string(StringDelimiter::F2x1, after)?;
                 self.tokens.append(&mut tokens);
+            }
+            else if let Some(string) = string_re.captures(code) {
+
             }
             else if let Some(keyword) = keyword_re.captures(code) {
                 let kw = &code[keyword.get(0).unwrap().range()];

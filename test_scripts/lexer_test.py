@@ -5,7 +5,7 @@ class TestClass:
         self.b = b
         self.c = c
         self.d = d
-        self.e = e
+        self.e = e!
 
     def __repr__(self):
         return "test class"
