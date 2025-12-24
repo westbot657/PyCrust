@@ -176,6 +176,7 @@ pub enum Operator {
 pub enum Number {
     I64(i64),
     F64(f64),
+    Complex { real: f64, imaginary: f64 },
 }
 
 #[derive(Debug)]
