@@ -1,4 +1,4 @@
-use crate::core::types::{Comparator, Keyword, Number, Operator, Symbol, TextPosition, TextSpan, Token, TokenValue, Tokens};
+use crate::core::types::{Comparator, Keyword, Number, NumericValue, Operator, Symbol, TextPosition, TextSpan, Token, TokenValue, Tokens};
 use anyhow::{anyhow, Result};
 use regex::Regex;
 use crate::lexer::unescape::unescape;
@@ -163,16 +163,16 @@ impl Lexer {
                 )
             "#
         )?;
-        let binary_num_re = Regex::new(r#"^0[bB][01]+"#)?;
-        let octal_num_re = Regex::new(r#"^0[oO][0-7]+"#)?;
-        let hex_num_re = Regex::new(r#"^0x[0-9a-fA-F]+"#)?;
+        let binary_num_re = Regex::new(r#"^0[bB](?<bin>[01]+)"#)?;
+        let octal_num_re = Regex::new(r#"^0[oO](?<oct>[0-7]+)"#)?;
+        let hex_num_re = Regex::new(r#"^0[xX](?<hex>[0-9a-fA-F]+)"#)?;
         let numeric_re = Regex::new(
             r#"(?x)^
-                (?<real> [1-9]\d+ (?:\. (?:\d*)? )?
+                (?<real> [1-9]\d* (?:\. (?:\d*)? )?
                 |        0 (?:\. (?:\d*)? )?
                 |        \. \d+
                 )
-                (?<exponent> [eE][+\-]?\d+ )?
+                (?: [eE] (?<exp> [+\-]?\d+ ) )?
                 j?
             "#
         )?;
@@ -183,8 +183,8 @@ impl Lexer {
 
         let string_re = Regex::new(
             r#"(?x)^(?:
-                "(?:\\.|[^"])"
-                | '(?:\\.|[^'])'
+                "(?:\\.|[^"])*"
+                | '(?:\\.|[^'])*'
             )"#
         )?;
 
@@ -334,12 +334,50 @@ impl Lexer {
                 let raw_txt = &code[number.get(0).unwrap().range()];
                 self.position.advance(raw_txt);
                 let num_txt = (raw_txt).replace("_", "");
-                let num = if num_txt.contains(".") {
-                    Number::F64(num_txt.parse::<f64>()?)
+
+                let val = if let Some(bin) = binary_num_re.captures(&num_txt) {
+                    let raw = bin.name("bin").unwrap().as_str();
+                    let num = i64::from_str_radix(raw, 2)?;
+                    Token::new(TokenValue::NumberLiteral(Number::Real(NumericValue::I64(num))), pos.span_to(&self.position), raw_txt)
+                }
+                else if let Some(oct) = octal_num_re.captures(&num_txt) {
+                    let raw = oct.name("oct").unwrap().as_str();
+                    let num = i64::from_str_radix(raw, 8)?;
+                    Token::new(TokenValue::NumberLiteral(Number::Real(NumericValue::I64(num))), pos.span_to(&self.position), raw_txt)
+                }
+                else if let Some(hex) = hex_num_re.captures(&num_txt) {
+                    let raw = hex.name("hex").unwrap().as_str();
+                    let num = i64::from_str_radix(raw, 16)?;
+                    Token::new(TokenValue::NumberLiteral(Number::Real(NumericValue::I64(num))), pos.span_to(&self.position), raw_txt)
+                }
+                else if let Some(num) = numeric_re.captures(&num_txt) {
+                    let real = num.name("real").unwrap().as_str();
+                    let exponent = num.name("exp").map(|o| o.as_str());
+                    let imaginary = num_txt.ends_with("j");
+
+                    let mut val = if real.contains(".") {
+                        NumericValue::F64(real.parse::<f64>()?)
+                    } else {
+                        NumericValue::I64(real.parse::<i64>()?)
+                    };
+
+                    if let Some(exp) = exponent {
+                        val *= 10f64.powi(exp.parse::<i32>()?);
+                    }
+
+                    let val = if imaginary {
+                        Number::Complex { real: 0.into(), imaginary: val }
+                    } else {
+                        Number::Real(val)
+                    };
+
+                    Token::new(TokenValue::NumberLiteral(val), pos.span_to(&self.position), raw_txt)
                 } else {
-                    Number::I64(num_txt.parse::<i64>()?)
+                    unreachable!("ERROR: number pattern else branch was reached!! ({} => {})", raw_txt, num_txt)
                 };
-                self.tokens.push(Token::new(TokenValue::NumberLiteral(num), pos.span_to(&self.position), raw_txt))
+
+                self.tokens.push(val);
+
             }
             else if let Some(txt) = code.splice_start("->", &mut self.position) {
                 self.tokens.push(Token::new(TokenValue::Symbol(Symbol::Arrow), pos.span_to(&self.position), txt))

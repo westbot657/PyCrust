@@ -1,4 +1,5 @@
 use std::fmt::{Display, Formatter};
+use std::ops::MulAssign;
 
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serial", derive(serde::Serialize, serde::Deserialize))]
@@ -173,10 +174,58 @@ pub enum Operator {
 
 #[derive(Debug)]
 #[cfg_attr(feature = "serial", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "snake_case"))]
-pub enum Number {
+pub enum NumericValue {
     I64(i64),
     F64(f64),
-    Complex { real: f64, imaginary: f64 },
+}
+
+impl From<i64> for NumericValue {
+    fn from(value: i64) -> Self {
+        Self::I64(value)
+    }
+}
+
+impl From<f64> for NumericValue {
+    fn from(value: f64) -> Self {
+        Self::F64(value)
+    }
+}
+
+impl MulAssign<NumericValue> for NumericValue {
+    fn mul_assign(&mut self, rhs: NumericValue) {
+        match (&self, rhs) {
+            (NumericValue::I64(i), NumericValue::I64(i2)) => *self = NumericValue::I64(*i * i2),
+            (NumericValue::I64(i), NumericValue::F64(f2)) => *self = NumericValue::F64(*i as f64 * f2),
+            (NumericValue::F64(f), NumericValue::I64(i2)) => *self = NumericValue::F64(*f * i2 as f64),
+            (NumericValue::F64(f), NumericValue::F64(f2)) => *self = NumericValue::F64(*f * f2),
+        }
+    }
+}
+
+impl MulAssign<f64> for NumericValue {
+    fn mul_assign(&mut self, rhs: f64) {
+        match &self {
+            NumericValue::I64(i) => *self = NumericValue::F64(*i as f64 * rhs),
+            NumericValue::F64(f) => *self = NumericValue::F64(*f * rhs),
+        }
+    }
+}
+
+impl MulAssign<i64> for NumericValue {
+    fn mul_assign(&mut self, rhs: i64) {
+        match &self {
+            NumericValue::I64(i) => *self = NumericValue::I64(*i * rhs),
+            NumericValue::F64(f) => *self = NumericValue::F64(*f * rhs as f64)
+        }
+    }
+}
+
+
+#[derive(Debug)]
+#[cfg_attr(feature = "serial", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "snake_case"))]
+pub enum Number {
+    Real(NumericValue),
+    Complex { real: NumericValue, imaginary: NumericValue },
 }
 
 #[derive(Debug)]
@@ -229,7 +278,7 @@ impl TextPosition {
     pub fn zero() -> Self {
         Self {
             index: 0,
-            column: 0,
+            column: 1,
             line: 1,
         }
     }
@@ -238,7 +287,7 @@ impl TextPosition {
         for ch in content.chars() {
             if ch == '\n' {
                 self.line += 1;
-                self.column = 0;
+                self.column = 1;
             } else {
                 self.column += 1;
             }
@@ -276,22 +325,22 @@ impl Display for Token {
 impl Display for TokenValue {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            TokenValue::Word(w) => write!(f, "word"),
+            TokenValue::Word(_) => write!(f, "word"),
             TokenValue::Symbol(_) => write!(f, "symbol"),
             TokenValue::Keyword(_) => write!(f, "keyword"),
             TokenValue::Operator(_) => write!(f, "operator"),
             TokenValue::AssignOperator(_) => write!(f, "assign-operator"),
             TokenValue::Comparator(_) => write!(f, "comparison"),
-            TokenValue::StringLiteral(_) => write!(f, "literal-string"),
-            TokenValue::BooleanLiteral(_) => write!(f, "literal-bool"),
-            TokenValue::NumberLiteral(_) => write!(f, "literal-number"),
+            TokenValue::StringLiteral(_) => write!(f, "string-literal"),
+            TokenValue::BooleanLiteral(_) => write!(f, "boolean-literal"),
+            TokenValue::NumberLiteral(_) => write!(f, "number-literal"),
             TokenValue::Comment(_) => write!(f, "comment"),
             TokenValue::FString(_) => write!(f, "f-string"),
             TokenValue::Newline => write!(f, "newline"),
             TokenValue::LeadingWhitespace => write!(f, "leading-whitespace"),
             TokenValue::Indent => write!(f, "indent"),
             TokenValue::Dedent => write!(f, "dedent"),
-            TokenValue::None => write!(f, "literal-none"),
+            TokenValue::None => write!(f, "none"),
         }
     }
 }
