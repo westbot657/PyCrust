@@ -130,7 +130,7 @@ impl Lexer {
     }
 
     pub fn get_error_squiggle(start: usize, length: usize) -> String {
-        " ".repeat(start) + &"^".repeat(length)
+        " ".repeat(start-1) + &"^".repeat(length)
     }
 
     pub fn get_offset_pos(&self, pos: &TextPosition, offset: usize) -> TextPosition {
@@ -305,7 +305,7 @@ impl Lexer {
                     }
                     Err((e, p, l)) => {
                         let pos = self.get_offset_pos(&pos, p);
-                        let err = format!("File \"{}\", line {}\n{}\n{}\n{}", context.file_name, pos.line, self.get_line_by_number(pos.line).unwrap(), Self::get_error_squiggle(pos.column, l), e);
+                        let err = format!("  File \"{}\", line {}\n{}\n{}\n{}", context.file_name, pos.line, self.get_line_by_number(pos.line).unwrap(), Self::get_error_squiggle(pos.column, l), e);
                         context.set_error(err.clone());
                         return Err(anyhow!("{}", err));
                     }
@@ -537,9 +537,10 @@ impl Lexer {
                 self.position.advance(&code[s.get(0).unwrap().range()])
             }
             else {
-                let chr = &code.chars().nth(0).unwrap();
                 self.position.increment(1);
-                return Err(anyhow!("Unexpected character '{}' at {}", chr, self.position))
+                let err = format!("\n  File \"{}\", line {}\n{}\n{}\nSyntax Error: invalid syntax", context.file_name, pos.line, self.get_line_by_number(pos.line).unwrap(), Self::get_error_squiggle(pos.column, 1));
+                context.set_error(err.clone());
+                return Err(anyhow!("{}", err))
             }
 
         }
