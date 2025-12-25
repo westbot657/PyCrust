@@ -235,22 +235,22 @@ impl Lexer {
             }
             else if let Some(after) = code.strip_prefix("r'''") {
                 self.position.increment(5);
-                let mut tokens = self.lex_r_string(StringDelimiter::F1x3, after)?;
+                let mut tokens = self.lex_string(StringDelimiter::F1x3, after, true)?;
                 self.tokens.append(&mut tokens);
             }
             else if let Some(after) = code.strip_prefix("r\"\"\"") {
                 self.position.increment(5);
-                let mut tokens = self.lex_r_string(StringDelimiter::F2x3, after)?;
+                let mut tokens = self.lex_string(StringDelimiter::F2x3, after, true)?;
                 self.tokens.append(&mut tokens);
             }
             else if let Some(after) = code.strip_prefix("r'") {
                 self.position.increment(3);
-                let mut tokens = self.lex_r_string(StringDelimiter::F1x3, after)?;
+                let mut tokens = self.lex_string(StringDelimiter::F1x3, after, true)?;
                 self.tokens.append(&mut tokens);
             }
             else if let Some(after) = code.strip_prefix("r\"") {
                 self.position.increment(3);
-                let mut tokens = self.lex_r_string(StringDelimiter::F2x3, after)?;
+                let mut tokens = self.lex_string(StringDelimiter::F2x3, after, true)?;
                 self.tokens.append(&mut tokens);
             }
             else if let Some(after) = code.strip_prefix("rb'''").or_else(|| code.strip_prefix("br'''")) {
@@ -379,6 +379,14 @@ impl Lexer {
                 self.tokens.push(val);
 
             }
+            else if code.starts_with("#") {
+                if let Some(len) = code.find("\n") {
+                    let slice = &code[0..len];
+                    self.position.advance(slice);
+                } else {
+                    return Ok(()) // if there's no next \n then it's the end of file
+                }
+            }
             else if let Some(txt) = code.splice_start("->", &mut self.position) {
                 self.tokens.push(Token::new(TokenValue::Symbol(Symbol::Arrow), pos.span_to(&self.position), txt))
             }
@@ -502,11 +510,17 @@ impl Lexer {
             else if let Some(txt) = code.splice_start("@", &mut self.position) {
                 self.tokens.push(Token::new(TokenValue::Symbol(Symbol::Decorator), pos.span_to(&self.position), txt))
             }
+            else if let Some(txt) = code.splice_start("...", &mut self.position) {
+                self.tokens.push(Token::new(TokenValue::Ellipsis, pos.span_to(&self.position), txt))
+            }
             else if let Some(txt) = code.splice_start(".", &mut self.position) {
                 self.tokens.push(Token::new(TokenValue::Symbol(Symbol::Dot), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start(",", &mut self.position) {
                 self.tokens.push(Token::new(TokenValue::Symbol(Symbol::Comma), pos.span_to(&self.position), txt))
+            }
+            else if let Some(txt) = code.splice_start(":=", &mut self.position) {
+                self.tokens.push(Token::new(TokenValue::Symbol(Symbol::Walrus), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start(":", &mut self.position) {
                 self.tokens.push(Token::new(TokenValue::Symbol(Symbol::Colon), pos.span_to(&self.position), txt))
@@ -537,7 +551,7 @@ impl Lexer {
         todo!()
     }
 
-    fn lex_r_string(&mut self, delimiter: StringDelimiter, current: &str) -> Result<Tokens> {
+    fn lex_string(&mut self, delimiter: StringDelimiter, current: &str, do_unescapes: bool) -> Result<Tokens> {
         todo!()
     }
 

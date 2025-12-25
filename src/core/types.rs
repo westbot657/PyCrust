@@ -120,6 +120,8 @@ pub enum Symbol {
     Comma,
     #[cfg_attr(feature = "serial", serde(rename=":"))]
     Colon,
+    #[cfg_attr(feature = "serial", serde(rename=":="))]
+    Walrus,
 }
 
 #[derive(Debug)]
@@ -253,6 +255,7 @@ pub enum TokenValue {
     Dedent,
     None,
     LineContinuation,
+    Ellipsis,
 }
 
 #[cfg_attr(feature = "serial", derive(serde::Serialize, serde::Deserialize))]
@@ -340,7 +343,8 @@ impl Display for TokenValue {
             TokenValue::Indent => write!(f, "indent"),
             TokenValue::Dedent => write!(f, "dedent"),
             TokenValue::None => write!(f, "none"),
-            TokenValue::LineContinuation => write!(f, "line-continuation")
+            TokenValue::LineContinuation => write!(f, "line-continuation"),
+            TokenValue::Ellipsis => write!(f, "ellipsis"),
         }
     }
 }

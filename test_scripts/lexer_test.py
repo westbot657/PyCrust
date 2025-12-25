@@ -1,7 +1,7 @@
 
 class TestClass:
     def __init__(self, a: str, b: int, c: float, d: dict[str, int], e: list[float]):
-        self.a = a
+        self.a = a # comment support should now work!!
         self.b = b
         self.c = c
         self.d = d
