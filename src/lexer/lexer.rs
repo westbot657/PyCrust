@@ -22,13 +22,6 @@ pub struct Lexer {
     file_name: String,
 }
 
-pub enum StringDelimiter {
-    F1x3, // '''
-    F2x3, // """
-    F1x1, // '
-    F2x1, // "
-}
-
 trait StrSplice {
     fn splice_start(&self, text: &str, pos: &mut TextPosition) -> Option<&str>;
 }
@@ -120,7 +113,7 @@ impl Lexer {
 
         let mut context = LexerContext::new(self.file_name.clone());
 
-        self.lex_normal(&source, &mut context)?;
+        self.lex_normal(&source, &mut context, false)?;
 
         Ok(context.to_result())
     }
@@ -140,7 +133,7 @@ impl Lexer {
         pos
     }
 
-    fn lex_normal(&mut self, source: &str, context: &mut LexerContext) -> Result<()> {
+    fn lex_normal(&mut self, source: &str, context: &mut LexerContext, do_f_str_lookahead: bool) -> Result<()> {
 
         let keyword_re = Regex::new(
             r#"(?x)^
@@ -181,11 +174,10 @@ impl Lexer {
         let newlines_re = Regex::new(r#"(?x)^\n\s*"#)?;
         let space_re = Regex::new(r#"^ +"#)?;
 
-        let string_re = Regex::new(
-            r#"(?x)^(?:
-                "(?:\\.|[^"])*"
-                | '(?:\\.|[^'])*'
-            )"#
+        let prefix_str_re = Regex::new(
+            r#"(?x)^
+                (?:rf?|fr?|br?|rb)?(?:"(?:"")?|'(?:'')?)
+            "#
         )?;
 
         let length = source.len();
@@ -193,123 +185,9 @@ impl Lexer {
         while self.position.index < length {
             let code = &source[self.position.index..];
             let pos = self.position.clone();
-            if let Some(after) = code.strip_prefix("f'''") {
-                self.position.increment(4);
-                let mut tokens = self.lex_f_string(StringDelimiter::F1x3, after, true)?;
-                self.tokens.append(&mut tokens);
-            }
-            else if let Some(after) = code.strip_prefix("f\"\"\"") {
-                self.position.increment(4);
-                let mut tokens = self.lex_f_string(StringDelimiter::F2x3, after, true)?;
-                self.tokens.append(&mut tokens);
-            }
-            else if let Some(after) = code.strip_prefix("f'") {
-                self.position.increment(2);
-                let mut tokens = self.lex_f_string(StringDelimiter::F1x1, after, true)?;
-                self.tokens.append(&mut tokens);
-            }
-            else if let Some(after) = code.strip_prefix("f\"") {
-                self.position.increment(2);
-                let mut tokens = self.lex_f_string(StringDelimiter::F2x1, after, true)?;
-                self.tokens.append(&mut tokens);
-            }
-            else if let Some(after) = code.strip_prefix("rf'''").or_else(|| code.strip_prefix("fr'''")) {
-                self.position.increment(5);
-                let mut tokens = self.lex_f_string(StringDelimiter::F1x3, after, false)?;
-                self.tokens.append(&mut tokens);
-            }
-            else if let Some(after) = code.strip_prefix("rf\"\"\"").or_else(|| code.strip_prefix("fr\"\"\"")) {
-                self.position.increment(5);
-                let mut tokens = self.lex_f_string(StringDelimiter::F2x3, after, false)?;
-                self.tokens.append(&mut tokens);
-            }
-            else if let Some(after) = code.strip_prefix("rf'").or_else(|| code.strip_prefix("fr'")) {
-                self.position.increment(3);
-                let mut tokens = self.lex_f_string(StringDelimiter::F1x3, after, false)?;
-                self.tokens.append(&mut tokens);
-            }
-            else if let Some(after) = code.strip_prefix("rf\"").or_else(|| code.strip_prefix("fr\"")) {
-                self.position.increment(3);
-                let mut tokens = self.lex_f_string(StringDelimiter::F2x3, after, false)?;
-                self.tokens.append(&mut tokens);
-            }
-            else if let Some(after) = code.strip_prefix("r'''") {
-                self.position.increment(5);
-                let mut tokens = self.lex_string(StringDelimiter::F1x3, after, true)?;
-                self.tokens.append(&mut tokens);
-            }
-            else if let Some(after) = code.strip_prefix("r\"\"\"") {
-                self.position.increment(5);
-                let mut tokens = self.lex_string(StringDelimiter::F2x3, after, true)?;
-                self.tokens.append(&mut tokens);
-            }
-            else if let Some(after) = code.strip_prefix("r'") {
-                self.position.increment(3);
-                let mut tokens = self.lex_string(StringDelimiter::F1x3, after, true)?;
-                self.tokens.append(&mut tokens);
-            }
-            else if let Some(after) = code.strip_prefix("r\"") {
-                self.position.increment(3);
-                let mut tokens = self.lex_string(StringDelimiter::F2x3, after, true)?;
-                self.tokens.append(&mut tokens);
-            }
-            else if let Some(after) = code.strip_prefix("rb'''").or_else(|| code.strip_prefix("br'''")) {
-                self.position.increment(5);
-                let mut tokens = self.lex_b_string(StringDelimiter::F1x3, after, false)?;
-                self.tokens.append(&mut tokens);
-            }
-            else if let Some(after) = code.strip_prefix("rb\"\"\"").or_else(|| code.strip_prefix("br\"\"\"")) {
-                self.position.increment(5);
-                let mut tokens = self.lex_b_string(StringDelimiter::F2x3, after, false)?;
-                self.tokens.append(&mut tokens);
-            }
-            else if let Some(after) = code.strip_prefix("rb'").or_else(|| code.strip_prefix("br'")) {
-                self.position.increment(3);
-                let mut tokens = self.lex_b_string(StringDelimiter::F1x3, after, false)?;
-                self.tokens.append(&mut tokens);
-            }
-            else if let Some(after) = code.strip_prefix("rb\"").or_else(|| code.strip_prefix("br\"")) {
-                self.position.increment(3);
-                let mut tokens = self.lex_b_string(StringDelimiter::F2x3, after, false)?;
-                self.tokens.append(&mut tokens);
-            }
-            else if let Some(after) = code.strip_prefix("b'''") {
-                self.position.increment(5);
-                let mut tokens = self.lex_b_string(StringDelimiter::F1x3, after, true)?;
-                self.tokens.append(&mut tokens);
-            }
-            else if let Some(after) = code.strip_prefix("b\"\"\"") {
-                self.position.increment(5);
-                let mut tokens = self.lex_b_string(StringDelimiter::F2x3, after, true)?;
-                self.tokens.append(&mut tokens);
-            }
-            else if let Some(after) = code.strip_prefix("b'") {
-                self.position.increment(3);
-                let mut tokens = self.lex_b_string(StringDelimiter::F1x3, after, true)?;
-                self.tokens.append(&mut tokens);
-            }
-            else if let Some(after) = code.strip_prefix("b\"") {
-                self.position.increment(3);
-                let mut tokens = self.lex_b_string(StringDelimiter::F2x3, after, true)?;
-                self.tokens.append(&mut tokens);
-            }
-            else if let Some(string) = string_re.captures(code) {
-                let string = &code[string.get(0).unwrap().range()];
-                context.position = self.position.clone();
-                self.position.advance(string);
-                let string_res = unescape(&string[1..string.len()-1], context);
-                match string_res {
-                    Ok(s) => {
-                        let s = TokenValue::StringLiteral(s);
-                        self.tokens.push(Token::new(s, pos.span_to(&self.position), string))
-                    }
-                    Err((e, p, l)) => {
-                        let pos = self.get_offset_pos(&pos, p);
-                        let err = format!("  File \"{}\", line {}\n{}\n{}\n{}", context.file_name, pos.line, self.get_line_by_number(pos.line).unwrap(), Self::get_error_squiggle(pos.column, l), e);
-                        context.set_error(err.clone());
-                        return Err(anyhow!("{}", err));
-                    }
-                }
+            if let Some(prefix) = prefix_str_re.captures(code) {
+                let token = self.lex_string(prefix.get(0).unwrap().as_str(), code, pos)?;
+                self.tokens.push(token);
             }
             else if let Some(keyword) = keyword_re.captures(code) {
                 let kw = &code[keyword.get(0).unwrap().range()];
@@ -505,6 +383,7 @@ impl Lexer {
                 self.tokens.push(Token::new(TokenValue::Symbol(Symbol::LBrace), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start("}", &mut self.position) {
+                todo!("Look ahead for end of f-string if set, can only contain escaped {{ or }}");
                 self.tokens.push(Token::new(TokenValue::Symbol(Symbol::RBrace), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start("@", &mut self.position) {
@@ -548,17 +427,24 @@ impl Lexer {
         Ok(())
     }
 
-    fn lex_f_string(&mut self, delimiter: StringDelimiter, current: &str, do_unescapes: bool) -> Result<Tokens> {
-        todo!()
+
+    fn lex_string(&mut self, prefix: &str, code: &str, pos: TextPosition) -> Result<Token> {
+        let mut string = "".to_string();
+
+        let is_raw = prefix.contains("r");
+        let is_format = prefix.contains("f");
+        let is_bytes = prefix.contains("b");
+        let prefix_len: usize = if is_raw { 1 } else { 0 } + if is_format { 1 } else { 0 } + if is_bytes { 1 } else { 0 };
+        let delimiter = &prefix[prefix_len..];
+
+
+
+
+        let literal_size = string.len() + prefix_len + (2 * delimiter.len());
+
+        Ok(Token::new(TokenValue::StringLiteral(string), pos.span_to(&self.position), &code[0..literal_size]))
     }
 
-    fn lex_string(&mut self, delimiter: StringDelimiter, current: &str, do_unescapes: bool) -> Result<Tokens> {
-        todo!()
-    }
-
-    fn lex_b_string(&mut self, delimiter: StringDelimiter, current: &str, do_unescapes: bool) -> Result<Tokens> {
-        todo!()
-    }
 
 }
 
