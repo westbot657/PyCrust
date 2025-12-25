@@ -18,9 +18,7 @@ pub struct TextSpan {
 
 impl TextSpan {
     pub fn new(start: TextPosition, end: TextPosition) -> Self {
-        Self {
-            start, end
-        }
+        Self { start, end }
     }
 }
 
@@ -254,6 +252,7 @@ pub enum TokenValue {
     Indent,
     Dedent,
     None,
+    LineContinuation,
 }
 
 #[cfg_attr(feature = "serial", derive(serde::Serialize, serde::Deserialize))]
@@ -341,6 +340,7 @@ impl Display for TokenValue {
             TokenValue::Indent => write!(f, "indent"),
             TokenValue::Dedent => write!(f, "dedent"),
             TokenValue::None => write!(f, "none"),
+            TokenValue::LineContinuation => write!(f, "line-continuation")
         }
     }
 }

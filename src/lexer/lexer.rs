@@ -511,6 +511,9 @@ impl Lexer {
             else if let Some(txt) = code.splice_start(":", &mut self.position) {
                 self.tokens.push(Token::new(TokenValue::Symbol(Symbol::Colon), pos.span_to(&self.position), txt))
             }
+            else if let Some(txt) = code.splice_start("\\", &mut self.position) {
+                self.tokens.push(Token::new(TokenValue::LineContinuation, pos.span_to(&self.position), txt))
+            }
             else if let Some(n) = newlines_re.captures(code) {
                 let raw = &code[n.get(0).unwrap().range()];
                 self.position.advance(raw);
