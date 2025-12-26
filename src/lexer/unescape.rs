@@ -1,11 +1,11 @@
 use std::iter::{Enumerate, Peekable};
-use std::str::Chars;
+use std::str::{CharIndices, Chars};
 use crate::lexer::lexer::LexerContext;
 
 pub fn unescape(base: &str, context: &mut LexerContext) -> Result<String, (String, usize, usize)> {
     let mut output = String::with_capacity(base.len());
 
-    let mut iter = base.chars().enumerate().peekable();
+    let mut iter = base.char_indices().peekable();
 
     while let Some((i, c)) = iter.next() {
         if c == '\\' {
@@ -46,7 +46,7 @@ enum ConversionResult {
     Exit(Option<char>),
 }
 
-fn get_hex_char(iter: &mut Peekable<Enumerate<Chars>>) -> ConversionResult {
+fn get_hex_char(iter: &mut Peekable<CharIndices>) -> ConversionResult {
     if let Some((i, d0)) = iter.next() {
         match d0 {
             '0'..='9' | 'a'..='f' | 'A'..='F' => ConversionResult::Ok(d0),
@@ -57,7 +57,7 @@ fn get_hex_char(iter: &mut Peekable<Enumerate<Chars>>) -> ConversionResult {
     }
 }
 
-fn get_octal_char(iter: &mut Peekable<Enumerate<Chars>>) -> ConversionResult {
+fn get_octal_char(iter: &mut Peekable<CharIndices>) -> ConversionResult {
     if let Some((i, d0)) = iter.next() {
         match d0 {
             '0'..='7' => ConversionResult::Ok(d0),
@@ -99,7 +99,7 @@ macro_rules! as_digit {
     };
 }
 
-fn process_hex(iter: &mut Peekable<Enumerate<Chars>>, output: &mut String) {
+fn process_hex(iter: &mut Peekable<CharIndices>, output: &mut String) {
     let mut code = 0;
     let base = 0x10;
     let c1 = get_hex! { output, iter, "\\x{}", () };
@@ -111,7 +111,7 @@ fn process_hex(iter: &mut Peekable<Enumerate<Chars>>, output: &mut String) {
     *output += &char::from_u32(code).unwrap().to_string();
 }
 
-fn process_unicode(iter: &mut Peekable<Enumerate<Chars>>, output: &mut String, size8: bool, position: usize) -> Result<(), (String, usize, usize)> {
+fn process_unicode(iter: &mut Peekable<CharIndices>, output: &mut String, size8: bool, position: usize) -> Result<(), (String, usize, usize)> {
     let pf = if size8 { 'U' } else { 'u' };
 
     let base = 0x10;
@@ -158,7 +158,7 @@ fn process_unicode(iter: &mut Peekable<Enumerate<Chars>>, output: &mut String, s
 
 }
 
-fn process_octal(iter: &mut Peekable<Enumerate<Chars>>, output: &mut String, c1: char, context: &mut LexerContext) {
+fn process_octal(iter: &mut Peekable<CharIndices>, output: &mut String, c1: char, context: &mut LexerContext) {
 
     let base = 0o10;
     let mut code = 0;

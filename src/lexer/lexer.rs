@@ -113,7 +113,7 @@ impl Lexer {
 
         let mut context = LexerContext::new(self.file_name.clone());
 
-        self.lex_normal(&source, &mut context, false)?;
+        self.lex_normal(&source, &mut context)?;
 
         Ok(context.to_result())
     }
@@ -133,7 +133,7 @@ impl Lexer {
         pos
     }
 
-    fn lex_normal(&mut self, source: &str, context: &mut LexerContext, do_f_str_lookahead: bool) -> Result<()> {
+    fn lex_normal(&mut self, source: &str, context: &mut LexerContext) -> Result<()> {
 
         let keyword_re = Regex::new(
             r#"(?x)^
@@ -181,6 +181,8 @@ impl Lexer {
         )?;
 
         let length = source.len();
+
+        let mut brace_depth = 0u32;
 
         while self.position.index < length {
             let code = &source[self.position.index..];
@@ -380,10 +382,15 @@ impl Lexer {
                 self.tokens.push(Token::new(TokenValue::Symbol(Symbol::RBracket), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start("{", &mut self.position) {
+                brace_depth += 1;
                 self.tokens.push(Token::new(TokenValue::Symbol(Symbol::LBrace), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start("}", &mut self.position) {
-                todo!("Look ahead for end of f-string if set, can only contain escaped {{ or }}");
+                if brace_depth == 0 {
+                    return Ok(()) // we exit here for f-string parsing (and unbalanced braces).
+                } else {
+                    brace_depth -= 1;
+                }
                 self.tokens.push(Token::new(TokenValue::Symbol(Symbol::RBrace), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start("@", &mut self.position) {
@@ -437,12 +444,42 @@ impl Lexer {
         let prefix_len: usize = if is_raw { 1 } else { 0 } + if is_format { 1 } else { 0 } + if is_bytes { 1 } else { 0 };
         let delimiter = &prefix[prefix_len..];
 
+        self.position.advance(prefix);
+        let code = &code[prefix.len()..];
+
+        if is_format {
+            let relative = self.position.index;
+
+            loop {
+                let start = self.position.index - relative;
+                let slice = &code[start..];
 
 
 
-        let literal_size = string.len() + prefix_len + (2 * delimiter.len());
+            }
+        } else {
+            let mut i = 0;
+            loop {
+                let next = &code[i..];
+                if next.starts_with("\\") {
+                    i += next.char_indices().nth(2).unwrap().0
+                } else if next.starts_with(delimiter) {
+                    break;
+                }
+            }
+            string += &code[0..i];
+            self.position.advance(&string);
+            self.position.advance(delimiter);
 
-        Ok(Token::new(TokenValue::StringLiteral(string), pos.span_to(&self.position), &code[0..literal_size]))
+            let literal_size = string.len() + prefix_len + (2 * delimiter.len());
+
+            if !is_raw {
+
+            }
+
+            Ok(Token::new(TokenValue::StringLiteral(string), pos.span_to(&self.position), &code[0..literal_size]))
+        }
+
     }
 
 
