@@ -5,7 +5,8 @@ This is currently under development and is far from usable.
 
 
 Feature checklist
-- [ ] Correctly lex and parse python
+- [x] Correctly lex python
+- [ ] Correctly parse python
 - [ ] Generate wasm-compatible byte code
 - [ ] python source imports
 - [ ] rust module imports

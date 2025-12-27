@@ -234,7 +234,7 @@ pub enum Number {
 #[cfg_attr(feature = "serial", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "snake_case"))]
 pub enum PartialFString {
     StringContent(String),
-    TokenStream(Tokens)
+    TokenStream(Tokens, Vec<PartialFString>),
 }
 
 #[derive(Debug)]
@@ -314,6 +314,17 @@ impl TextPosition {
 
 }
 
+impl Display for PartialFString {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PartialFString::StringContent(s) => write!(f, "[[{s:?}]]::str"),
+            PartialFString::TokenStream(t, spec) => write!(f, "[[\n{t}\n]]:(\n{}\n)::expression",
+                spec.iter().map(|t| t.to_string()).collect::<Vec<String>>().join(",\n")
+            )
+        }
+    }
+}
+
 impl Display for TextPosition {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}:{}", self.line, self.column)
@@ -340,7 +351,7 @@ impl Display for TokenValue {
             TokenValue::BooleanLiteral(_) => write!(f, "boolean-literal"),
             TokenValue::NumberLiteral(_) => write!(f, "number-literal"),
             TokenValue::Comment(_) => write!(f, "comment"),
-            TokenValue::FString(_) => write!(f, "f-string"),
+            TokenValue::FString(parts) => write!(f, "{{\n{}\n}}::f-string", parts.iter().map(|p| p.to_string()).collect::<Vec<String>>().join(",\n")),
             TokenValue::LeadingWhitespace => write!(f, "leading-whitespace"),
             TokenValue::Indent => write!(f, "indent"),
             TokenValue::Dedent => write!(f, "dedent"),

@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::mem;
-use crate::core::types::{Comparator, Keyword, Number, NumericValue, Operator, PartialFString, Symbol, TextPosition, TextSpan, Token, TokenValue, Tokens};
+use crate::core::types::{Comparator, Keyword, Number, NumericValue, Operator, PartialFString, Symbol, TextPosition, Token, TokenValue, Tokens};
 use anyhow::{anyhow, Result};
 use regex::Regex;
 use crate::lexer::unescape::unescape;
@@ -155,7 +155,7 @@ impl Lexer {
 
         let mut context = LexerContext::new(self.file_name.clone());
 
-        self.tokens = self.lex_normal(&source, &mut context, 0)?;
+        self.tokens = self.lex_normal(&source, &mut context, 0, false)?;
 
         self.cleanup_tokens()?;
 
@@ -274,7 +274,7 @@ impl Lexer {
     }
 
 
-    fn lex_normal(&mut self, source: &str, context: &mut LexerContext, index_offset: usize) -> Result<Tokens> {
+    fn lex_normal(&mut self, source: &str, context: &mut LexerContext, index_offset: usize, in_f_string: bool) -> Result<Tokens> {
 
         let mut tokens = Tokens::new();
 
@@ -445,8 +445,14 @@ impl Lexer {
             else if let Some(txt) = code.splice_start("!=", &mut self.position) {
                 tokens.push(Token::new(TokenValue::Comparator(Comparator::Ne), pos.span_to(&self.position), txt))
             }
-            else if let Some(txt) = code.splice_start("=", &mut self.position) {
-                tokens.push(Token::new(TokenValue::Symbol(Symbol::Assign), pos.span_to(&self.position), txt))
+            else if code.starts_with("=") {
+                if in_f_string && brace_depth == 0 {
+                    return Ok(tokens)
+                } else {
+                    let tref = &code[0..1];
+                    self.position.increment(1);
+                    tokens.push(Token::new(TokenValue::Symbol(Symbol::Assign), pos.span_to(&self.position), tref))
+                }
             }
             else if let Some(txt) = code.splice_start("**=", &mut self.position) {
                 tokens.push(Token::new(TokenValue::AssignOperator(Operator::Pow), pos.span_to(&self.position), txt))
@@ -542,13 +548,20 @@ impl Lexer {
                 brace_depth += 1;
                 tokens.push(Token::new(TokenValue::Symbol(Symbol::LBrace), pos.span_to(&self.position), txt))
             }
-            else if let Some(txt) = code.splice_start("}", &mut self.position) {
+            else if code.starts_with("}") {
                 if brace_depth == 0 {
-                    return Ok(tokens) // we return Ok here for f-string parsing.
+                    return if in_f_string {
+                        Ok(tokens)
+                    } else {
+                        Err(anyhow!("Unbalanced '}}'"))
+                    }
                 } else {
                     brace_depth -= 1;
                 }
-                tokens.push(Token::new(TokenValue::Symbol(Symbol::RBrace), pos.span_to(&self.position), txt))
+                let tref = &code[0..1];
+                self.position.increment(1);
+                tokens.push(Token::new(TokenValue::Symbol(Symbol::RBrace), pos.span_to(&self.position), tref))
+
             }
             else if let Some(txt) = code.splice_start("@", &mut self.position) {
                 tokens.push(Token::new(TokenValue::Symbol(Symbol::Decorator), pos.span_to(&self.position), txt))
@@ -565,8 +578,17 @@ impl Lexer {
             else if let Some(txt) = code.splice_start(":=", &mut self.position) {
                 tokens.push(Token::new(TokenValue::Symbol(Symbol::Walrus), pos.span_to(&self.position), txt))
             }
-            else if let Some(txt) = code.splice_start(":", &mut self.position) {
-                tokens.push(Token::new(TokenValue::Symbol(Symbol::Colon), pos.span_to(&self.position), txt))
+            else if code.starts_with(":") {
+                if in_f_string && brace_depth == 0 {
+                    return Ok(tokens)
+                } else {
+                    let tref = &code[0..1];
+                    self.position.increment(1);
+                    tokens.push(Token::new(TokenValue::Symbol(Symbol::Colon), pos.span_to(&self.position), tref))
+                }
+            }
+            else if in_f_string && brace_depth == 0 && code.starts_with("!") {
+                return Ok(tokens)
             }
             else if let Some(txt) = code.splice_start("\\", &mut self.position) {
                 if brace_depth == 0 {
@@ -596,6 +618,22 @@ impl Lexer {
         Ok(tokens)
     }
 
+    #[cfg(feature = "named-unicode")]
+    fn translate_unicode_name(&self, name: &str, start_idx: usize, context: &mut LexerContext) -> Result<String> {
+        unicode_names2::character(name)
+            .map(|c| c.to_string())
+            .ok_or_else(|| anyhow!(
+                "  File \"{}\", line {}\n{}\n{}\nSyntaxError: (unicode error) 'unicodeescape' codec can't decode bytes in position {}-{}: unknown Unicode character name",
+                context.file_name, self.position.line, self.get_line_by_number(self.position.line).unwrap(),
+                Self::get_error_squiggle(self.position.column, name.len()), start_idx, start_idx + name.len()
+        ))
+    }
+
+    #[cfg(not(feature = "named-unicode"))]
+    fn translate_unicode_name(&self, name: &str, _start_idx: usize, context: &mut LexerContext) -> Result<String> {
+        context.add_warning(format!("{}:{}: SyntaxWarning: rust feature not enabled: 'named-unicode'", context.file_name, self.position.line));
+        Ok(format!("\\N{{{name}}}"))
+    }
 
     fn lex_string(&mut self, prefix: &str, raw_code: &str, pos: TextPosition, context: &mut LexerContext) -> Result<Token> {
         let mut string = String::new();
@@ -626,6 +664,18 @@ impl Lexer {
                 else if slice.starts_with("\\\n") {
                     self.position.advance("\\\n");
                 }
+                else if slice.starts_with("\\N{") {
+                    if let Some(end) = slice.find("}") {
+                        let name = &slice[3..end];
+                        let raw = &slice[0..end+1];
+                        let literal = self.translate_unicode_name(name, start, context)?;
+                        string += &literal;
+                        self.position.advance(raw);
+                    } else {
+                        string += "\\N";
+                        self.position.increment(2);
+                    }
+                }
                 else if slice.starts_with("\\") {
                     let start = &slice[0..2];
                     string += start;
@@ -652,8 +702,14 @@ impl Lexer {
                     parts.push(PartialFString::StringContent(string));
                     string = String::new();
                     let next = &slice[1..];
-                    let tokens = self.lex_normal(next, context, self.position.index)?;
-                    parts.push(PartialFString::TokenStream(tokens));
+                    let tokens = self.lex_normal(next, context, self.position.index, true)?;
+
+                    let start = self.position.index - relative;
+                    let slice = &code[start..];
+
+                    let spec = self.parse_format_specifier(slice, context)?;
+
+                    parts.push(PartialFString::TokenStream(tokens, spec));
                 }
                 else if slice.starts_with(delimiter) {
                     self.position.advance(delimiter);
@@ -675,12 +731,13 @@ impl Lexer {
                 }
                 else {
                     let c = &slice[0..1];
+                    string += c;
                     self.position.advance(c);
                 }
 
             }
 
-            let literal = &code[pos.index..self.position.index];
+            let literal = &code[0..self.position.index-relative];
 
             if !is_raw {
                 for part in &mut parts {
@@ -733,6 +790,59 @@ impl Lexer {
 
     }
 
+    fn parse_format_specifier(&mut self, code: &str, context: &mut LexerContext) -> Result<Vec<PartialFString>> {
+
+        let relative = self.position.index;
+
+        let mut parts = Vec::new();
+
+        let mut string = String::new();
+
+        loop {
+            let start = self.position.index - relative;
+            let slice = &code[start..];
+
+            if slice.starts_with("}") {
+                self.position.increment(1);
+                parts.push(PartialFString::StringContent(string));
+                return Ok(parts)
+            }
+            else if slice.starts_with("{") {
+                self.position.increment(1);
+                parts.push(PartialFString::StringContent(string));
+                string = String::new();
+                let next = &slice[1..];
+                let tokens = self.lex_normal(next, context, self.position.index, true)?;
+
+                let start = self.position.index - relative;
+                let slice = &code[start..];
+
+                let spec = self.parse_format_specifier(slice, context)?;
+
+                parts.push(PartialFString::TokenStream(tokens, spec));
+            }
+            else if slice.starts_with("\\{") {
+                string += "\\";
+                self.position.increment(1);
+            }
+            else if slice.starts_with("\\") {
+                let start = &slice[0..2];
+                string += start;
+                self.position.advance(start);
+            }
+            else {
+                let c = &slice[0..1];
+                string += c;
+                self.position.advance(c);
+            }
+
+        }
+
+    }
+
 
 }
+
+
+
 
