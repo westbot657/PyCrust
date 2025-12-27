@@ -713,7 +713,9 @@ impl Lexer {
                 }
                 else if slice.starts_with(delimiter) {
                     self.position.advance(delimiter);
-                    parts.push(PartialFString::StringContent(string));
+                    if !string.is_empty() {
+                        parts.push(PartialFString::StringContent(string));
+                    }
                     break 'f_str;
                 }
                 else if slice.starts_with("\n") {
@@ -804,7 +806,9 @@ impl Lexer {
 
             if slice.starts_with("}") {
                 self.position.increment(1);
-                parts.push(PartialFString::StringContent(string));
+                if !string.is_empty() {
+                    parts.push(PartialFString::StringContent(string));
+                }
                 return Ok(parts)
             }
             else if slice.starts_with("{") {
