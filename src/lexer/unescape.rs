@@ -1,8 +1,8 @@
 use std::iter::{Enumerate, Peekable};
 use std::str::{CharIndices, Chars};
-use crate::lexer::lexer::LexerContext;
+use crate::lexer::lexer::{Lexer, LexerContext};
 
-pub fn unescape(base: &str, context: &mut LexerContext) -> Result<String, (String, usize, usize)> {
+pub fn unescape(base: &str, context: &mut LexerContext, allow_unicode: bool) -> Result<String, String> {
     let mut output = String::with_capacity(base.len());
 
     let mut iter = base.char_indices().peekable();
@@ -23,14 +23,22 @@ pub fn unescape(base: &str, context: &mut LexerContext) -> Result<String, (Strin
                     'v' => output += "\u{000B}",
                     '\n' => { /* ignore backslash and literal newline */ },
                     'x' => process_hex(&mut iter, &mut output),
-                    'u' => process_unicode(&mut iter, &mut output, false, i)?,
-                    'U' => process_unicode(&mut iter, &mut output, true, i)?,
+                    'u' if allow_unicode => process_unicode(&mut iter, &mut output, false, i)?,
+                    'U' if allow_unicode => process_unicode(&mut iter, &mut output, true, i)?,
                     '0'..='7' => process_octal(&mut iter, &mut output, c2, context),
                     u => output += &format!("\\{u}"),
                 }
 
             } else {
-                return Err(("Unclosed \\ escape".to_string(), i, 1))
+                let mut eof = context.position.clone();
+                eof.advance(base);
+                let last_line = base.rsplitn(2, "\n").nth(0).unwrap();
+
+                let err = format!(
+                    "  File \"{}\", line {}\n{}\n{}\nSyntaxError: unterminated string literal (detected at line {})",
+                    context.file_name, eof.line, last_line, Lexer::get_error_squiggle(eof.column, 1), eof.line
+                );
+                return Err(err)
             }
         } else {
             output += &format!("{c}");
@@ -111,7 +119,7 @@ fn process_hex(iter: &mut Peekable<CharIndices>, output: &mut String) {
     *output += &char::from_u32(code).unwrap().to_string();
 }
 
-fn process_unicode(iter: &mut Peekable<CharIndices>, output: &mut String, size8: bool, position: usize) -> Result<(), (String, usize, usize)> {
+fn process_unicode(iter: &mut Peekable<CharIndices>, output: &mut String, size8: bool, position: usize) -> Result<(), String> {
     let pf = if size8 { 'U' } else { 'u' };
 
     let base = 0x10;
@@ -153,7 +161,7 @@ fn process_unicode(iter: &mut Peekable<CharIndices>, output: &mut String, size8:
         *output += &valid.to_string();
         Ok(())
     } else {
-        Err(("Syntax error: (unicode error) 'unicodeescape' codec can't decode bytes in position 0-9: illegal Unicode character".to_string(), position, if size8 { 10 } else { 6 }))
+        Err("Syntax error: (unicode error) 'unicodeescape' codec can't decode bytes in position 0-9: illegal Unicode character".to_string())
     }
 
 }

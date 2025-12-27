@@ -1,5 +1,7 @@
 use std::fmt::{Display, Formatter};
 use std::ops::MulAssign;
+use std::slice::Iter;
+use std::vec::IntoIter;
 
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serial", derive(serde::Serialize, serde::Deserialize))]
@@ -9,11 +11,11 @@ pub struct TextPosition {
     pub line: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "serial", derive(serde::Serialize, serde::Deserialize))]
 pub struct TextSpan {
-    start: TextPosition,
-    end: TextPosition,
+    pub start: TextPosition,
+    pub end: TextPosition,
 }
 
 impl TextSpan {
@@ -232,7 +234,7 @@ pub enum Number {
 #[cfg_attr(feature = "serial", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "snake_case"))]
 pub enum PartialFString {
     StringContent(String),
-    TokenStream(Vec<Token>)
+    TokenStream(Tokens)
 }
 
 #[derive(Debug)]
@@ -245,11 +247,11 @@ pub enum TokenValue {
     AssignOperator(Operator),
     Comparator(Comparator),
     StringLiteral(String),
+    BytesLiteral(Vec<u8>),
     BooleanLiteral(bool),
     NumberLiteral(Number),
     Comment(String),
     FString(Vec<PartialFString>),
-    Newline,
     LeadingWhitespace,
     Indent,
     Dedent,
@@ -261,9 +263,9 @@ pub enum TokenValue {
 #[cfg_attr(feature = "serial", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug)]
 pub struct Token {
-    value: TokenValue,
-    span: TextSpan,
-    content: String,
+    pub value: TokenValue,
+    pub span: TextSpan,
+    pub content: String,
 }
 
 impl Token {
@@ -334,11 +336,11 @@ impl Display for TokenValue {
             TokenValue::AssignOperator(_) => write!(f, "assign-operator"),
             TokenValue::Comparator(_) => write!(f, "comparison"),
             TokenValue::StringLiteral(_) => write!(f, "string-literal"),
+            TokenValue::BytesLiteral(_) => write!(f, "bytes-literal"),
             TokenValue::BooleanLiteral(_) => write!(f, "boolean-literal"),
             TokenValue::NumberLiteral(_) => write!(f, "number-literal"),
             TokenValue::Comment(_) => write!(f, "comment"),
             TokenValue::FString(_) => write!(f, "f-string"),
-            TokenValue::Newline => write!(f, "newline"),
             TokenValue::LeadingWhitespace => write!(f, "leading-whitespace"),
             TokenValue::Indent => write!(f, "indent"),
             TokenValue::Dedent => write!(f, "dedent"),
@@ -355,6 +357,8 @@ impl Display for TextSpan {
     }
 }
 
+#[derive(Debug)]
+#[cfg_attr(feature = "serial", derive(serde::Serialize, serde::Deserialize))]
 pub struct Tokens {
     tokens: Vec<Token>
 }
@@ -365,6 +369,15 @@ impl Tokens {
             tokens: Vec::new(),
         }
     }
+    
+    pub fn iter(&self) -> Iter<'_, Token> {
+        self.tokens.iter()
+    }
+    
+    pub fn into_iter(self) -> IntoIter<Token> {
+        self.tokens.into_iter()
+    }
+    
     pub fn append(&mut self, other: &mut Tokens) {
         self.tokens.append(&mut other.tokens);
     }

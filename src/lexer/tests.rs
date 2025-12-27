@@ -5,7 +5,7 @@ use crate::lexer::unescape::unescape;
 fn do_unescape(msg: &str, literal: &str) -> Result<()> {
     let mut ctx = LexerContext::new("<test-unescape>".to_string());
 
-    let s = unescape(msg, &mut ctx).map_err(|(e, _, _)| anyhow!("{e}"))?;
+    let s = unescape(msg, &mut ctx, true).map_err(|e| anyhow!("{e}"))?;
 
     println!("Got escaped string: {msg} as {s}");
 

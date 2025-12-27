@@ -1,4 +1,6 @@
-use crate::core::types::{Comparator, Keyword, Number, NumericValue, Operator, Symbol, TextPosition, TextSpan, Token, TokenValue, Tokens};
+use std::collections::VecDeque;
+use std::mem;
+use crate::core::types::{Comparator, Keyword, Number, NumericValue, Operator, PartialFString, Symbol, TextPosition, TextSpan, Token, TokenValue, Tokens};
 use anyhow::{anyhow, Result};
 use regex::Regex;
 use crate::lexer::unescape::unescape;
@@ -12,7 +14,7 @@ pub struct LexerContext {
     warnings: Vec<String>,
     error: Option<String>,
     pub position: TextPosition,
-    file_name: String,
+    pub file_name: String,
 }
 
 pub struct Lexer {
@@ -92,6 +94,39 @@ impl LexerContext {
 
 }
 
+trait IndentTracker {
+    fn set_indent(&mut self, indent: usize) -> Result<Vec<TokenValue>, String>;
+}
+
+impl IndentTracker for VecDeque<usize> {
+    fn set_indent(&mut self, indent: usize) -> Result<Vec<TokenValue>, String> {
+        let mut delta = Vec::new();
+        if self.is_empty() {
+            delta.push(TokenValue::Indent);
+            self.push_back(indent);
+        } else {
+            let cur = *self.back().unwrap();
+            if cur < indent {
+                delta.push(TokenValue::Indent);
+                self.push_back(indent);
+            } else if cur > indent {
+                while let Some(cur) = self.back() {
+                    if *cur > indent {
+                        self.pop_back();
+                        delta.push(TokenValue::Dedent)
+                    } else if *cur < indent {
+                        return Err("IndentationError: unindent does not match any outer indentation level".to_string())
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+
+        Ok(delta)
+    }
+}
+
 impl Lexer {
 
     pub fn get_tokens(&self) -> &Tokens {
@@ -99,6 +134,13 @@ impl Lexer {
     }
 
     pub fn new(file_name: String, source: String) -> Self {
+
+        let source = if !source.ends_with("\n") {
+            source + "\n"
+        } else {
+            source
+        };
+
         Self {
             source,
             position: TextPosition::zero(),
@@ -113,7 +155,9 @@ impl Lexer {
 
         let mut context = LexerContext::new(self.file_name.clone());
 
-        self.lex_normal(&source, &mut context)?;
+        self.tokens = self.lex_normal(&source, &mut context, 0)?;
+
+        self.cleanup_tokens()?;
 
         Ok(context.to_result())
     }
@@ -133,7 +177,106 @@ impl Lexer {
         pos
     }
 
-    fn lex_normal(&mut self, source: &str, context: &mut LexerContext) -> Result<()> {
+    fn clip_leading_whitespace(token: &mut Token) -> bool {
+        let newline_count = token.content.matches('\n').count();
+
+        if newline_count == 1 {
+            return false;
+        }
+
+        let bytes = token.content.as_bytes();
+        let mut cut = 1;
+
+        while cut < bytes.len() && (bytes[cut] == b' ' || bytes[cut] == b'\t') {
+            cut += 1;
+        }
+
+        token.content.drain(..cut);
+        true
+    }
+
+    fn get_last_line_indent(s: &str) -> usize {
+        let last_line = s.rsplit('\n').next().unwrap_or(s);
+
+        let mut indent = 0;
+
+        for ch in last_line.chars() {
+            match ch {
+                ' ' => indent += 1,
+                '\t' => indent += 4,
+                _ => break,
+            }
+        }
+
+        indent
+    }
+
+    fn handle_indentation(&mut self, mut n: &mut Token, indentation: &mut VecDeque<usize>, tokens: &mut Tokens) -> Result<()> {
+        let new_indent = Self::get_last_line_indent(&n.content);
+        match indentation.set_indent(new_indent) {
+            Ok(delta) => {
+                for val in delta {
+                    tokens.push(Token::new(val, n.span.clone(), &n.content))
+                }
+            }
+            Err(e) => {
+                let line = self.get_line_by_number(n.span.end.line).unwrap();
+                let squiggle = Self::get_error_squiggle(n.span.end.column, 1);
+                return Err(anyhow!("  File \"{}\", line {}\n{}\n{}\n{}", self.file_name, n.span.end.line, line, squiggle, e));
+            }
+        }
+        Ok(())
+    }
+
+
+    fn cleanup_tokens(&mut self) -> Result<()> {
+
+        let mut toks = Tokens::new();
+        mem::swap(&mut toks, &mut self.tokens);
+        let mut iter = toks.into_iter().peekable();
+
+        let mut tokens = Tokens::new();
+
+        let mut indentation = VecDeque::new();
+        indentation.push_back(0usize);
+
+        loop {
+            let Some(mut tok) = iter.next() else {
+                break;
+            };
+
+            match tok {
+                Token { value: TokenValue::LineContinuation, .. } => {
+                    let Some(n) = iter.peek_mut() else {
+                        return Err(anyhow!("Unexpected EOF after '\\'"))
+                    };
+                    match n {
+                        Token { value: TokenValue::LeadingWhitespace, .. } => {
+                            if Self::clip_leading_whitespace(n) {
+                                self.handle_indentation(n, &mut indentation, &mut tokens)?
+                            }
+                        }
+                        _ => return Err(anyhow!("Expected newline after '\\', got token: {n:?}" ))
+                    }
+                }
+                Token { value: TokenValue::LeadingWhitespace, .. } => {
+                    self.handle_indentation(&mut tok, &mut indentation, &mut tokens)?
+                }
+                _ => {
+                    tokens.push(tok)
+                }
+            }
+
+        }
+
+        self.tokens = tokens;
+        Ok(())
+    }
+
+
+    fn lex_normal(&mut self, source: &str, context: &mut LexerContext, index_offset: usize) -> Result<Tokens> {
+
+        let mut tokens = Tokens::new();
 
         let keyword_re = Regex::new(
             r#"(?x)^
@@ -184,31 +327,33 @@ impl Lexer {
 
         let mut brace_depth = 0u32;
 
-        while self.position.index < length {
-            let code = &source[self.position.index..];
+
+
+        while self.position.index - index_offset < length {
+            let code = &source[(self.position.index - index_offset)..];
             let pos = self.position.clone();
             if let Some(prefix) = prefix_str_re.captures(code) {
-                let token = self.lex_string(prefix.get(0).unwrap().as_str(), code, pos)?;
-                self.tokens.push(token);
+                let token = self.lex_string(prefix.get(0).unwrap().as_str(), code, pos, context)?;
+                tokens.push(token);
             }
             else if let Some(keyword) = keyword_re.captures(code) {
                 let kw = &code[keyword.get(0).unwrap().range()];
                 self.position.advance(kw);
                 if kw == "True" {
-                    self.tokens.push(Token::new(TokenValue::BooleanLiteral(true), pos.span_to(&self.position), kw))
+                    tokens.push(Token::new(TokenValue::BooleanLiteral(true), pos.span_to(&self.position), kw))
                 } else if kw == "False" {
-                    self.tokens.push(Token::new(TokenValue::BooleanLiteral(false), pos.span_to(&self.position), kw))
+                    tokens.push(Token::new(TokenValue::BooleanLiteral(false), pos.span_to(&self.position), kw))
                 } else if kw == "None" {
-                    self.tokens.push(Token::new(TokenValue::None, pos.span_to(&self.position), kw))
+                    tokens.push(Token::new(TokenValue::None, pos.span_to(&self.position), kw))
                 } else {
                     let tk = Keyword::from_str(kw).unwrap();
-                    self.tokens.push(Token::new(TokenValue::Keyword(tk), pos.span_to(&self.position), kw));
+                    tokens.push(Token::new(TokenValue::Keyword(tk), pos.span_to(&self.position), kw));
                 }
             }
             else if let Some(word) = word_re.captures(code) {
                 let w = &code[word.get(0).unwrap().range()];
                 self.position.advance(w);
-                self.tokens.push(Token::new(TokenValue::Word(w.to_string()), pos.span_to(&self.position), w))
+                tokens.push(Token::new(TokenValue::Word(w.to_string()), pos.span_to(&self.position), w))
             }
             else if let Some(number) = number_re.captures(code) {
                 let raw_txt = &code[number.get(0).unwrap().range()];
@@ -256,7 +401,7 @@ impl Lexer {
                     unreachable!("ERROR: number pattern else branch was reached!! ({} => {})", raw_txt, num_txt)
                 };
 
-                self.tokens.push(val);
+                tokens.push(val);
 
             }
             else if code.starts_with("#") {
@@ -264,160 +409,177 @@ impl Lexer {
                     let slice = &code[0..len];
                     self.position.advance(slice);
                 } else {
-                    return Ok(()) // if there's no next \n then it's the end of file
+                    return Ok(tokens) // if there's no next \n then it's the end of file
                 }
             }
             else if let Some(txt) = code.splice_start("->", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::Symbol(Symbol::Arrow), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::Symbol(Symbol::Arrow), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start(">>=", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::AssignOperator(Operator::Rsh), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::AssignOperator(Operator::Rsh), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start(">>", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::Operator(Operator::Rsh), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::Operator(Operator::Rsh), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start("<<=", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::AssignOperator(Operator::Lsh), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::AssignOperator(Operator::Lsh), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start("<<", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::Operator(Operator::Lsh), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::Operator(Operator::Lsh), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start(">=", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::Comparator(Comparator::Ge), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::Comparator(Comparator::Ge), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start(">", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::Comparator(Comparator::Gt), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::Comparator(Comparator::Gt), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start("<=", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::Comparator(Comparator::Le), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::Comparator(Comparator::Le), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start("<", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::Comparator(Comparator::Lt), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::Comparator(Comparator::Lt), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start("==", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::Comparator(Comparator::Eq), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::Comparator(Comparator::Eq), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start("!=", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::Comparator(Comparator::Ne), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::Comparator(Comparator::Ne), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start("=", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::Symbol(Symbol::Assign), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::Symbol(Symbol::Assign), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start("**=", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::AssignOperator(Operator::Pow), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::AssignOperator(Operator::Pow), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start("**", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::Operator(Operator::Pow), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::Operator(Operator::Pow), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start("//=", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::AssignOperator(Operator::Floor), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::AssignOperator(Operator::Floor), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start("//", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::Operator(Operator::Floor), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::Operator(Operator::Floor), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start("+=", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::AssignOperator(Operator::Add), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::AssignOperator(Operator::Add), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start("+", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::Operator(Operator::Add), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::Operator(Operator::Add), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start("-=", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::AssignOperator(Operator::Sub), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::AssignOperator(Operator::Sub), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start("-", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::Operator(Operator::Sub), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::Operator(Operator::Sub), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start("*=", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::AssignOperator(Operator::Mul), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::AssignOperator(Operator::Mul), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start("*", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::Operator(Operator::Mul), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::Operator(Operator::Mul), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start("/=", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::AssignOperator(Operator::Div), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::AssignOperator(Operator::Div), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start("/", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::Operator(Operator::Div), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::Operator(Operator::Div), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start("%=", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::AssignOperator(Operator::Mod), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::AssignOperator(Operator::Mod), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start("%", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::Operator(Operator::Mod), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::Operator(Operator::Mod), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start("|=", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::AssignOperator(Operator::BitOr), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::AssignOperator(Operator::BitOr), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start("|", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::Operator(Operator::BitOr), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::Operator(Operator::BitOr), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start("&=", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::AssignOperator(Operator::BitAnd), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::AssignOperator(Operator::BitAnd), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start("&", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::Operator(Operator::BitAnd), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::Operator(Operator::BitAnd), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start("^=", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::AssignOperator(Operator::BitXor), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::AssignOperator(Operator::BitXor), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start("^", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::Operator(Operator::BitXor), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::Operator(Operator::BitXor), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start("~=", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::AssignOperator(Operator::BitNot), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::AssignOperator(Operator::BitNot), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start("~", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::Operator(Operator::BitNot), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::Operator(Operator::BitNot), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start("(", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::Symbol(Symbol::LParen), pos.span_to(&self.position), txt))
+                brace_depth += 1;
+                tokens.push(Token::new(TokenValue::Symbol(Symbol::LParen), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start(")", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::Symbol(Symbol::RParen), pos.span_to(&self.position), txt))
-            }
-            else if let Some(txt) = code.splice_start("[", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::Symbol(Symbol::LBracket), pos.span_to(&self.position), txt))
-            }
-            else if let Some(txt) = code.splice_start("]", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::Symbol(Symbol::RBracket), pos.span_to(&self.position), txt))
-            }
-            else if let Some(txt) = code.splice_start("{", &mut self.position) {
-                brace_depth += 1;
-                self.tokens.push(Token::new(TokenValue::Symbol(Symbol::LBrace), pos.span_to(&self.position), txt))
-            }
-            else if let Some(txt) = code.splice_start("}", &mut self.position) {
                 if brace_depth == 0 {
-                    return Ok(()) // we exit here for f-string parsing (and unbalanced braces).
+                    return Err(anyhow!("Unbalanced ')'"))
                 } else {
                     brace_depth -= 1;
                 }
-                self.tokens.push(Token::new(TokenValue::Symbol(Symbol::RBrace), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::Symbol(Symbol::RParen), pos.span_to(&self.position), txt))
+            }
+            else if let Some(txt) = code.splice_start("[", &mut self.position) {
+                brace_depth += 1;
+                tokens.push(Token::new(TokenValue::Symbol(Symbol::LBracket), pos.span_to(&self.position), txt))
+            }
+            else if let Some(txt) = code.splice_start("]", &mut self.position) {
+                if brace_depth == 0 {
+                    return Err(anyhow!("Unbalanced ']'"))
+                } else {
+                    brace_depth -= 1;
+                }
+                tokens.push(Token::new(TokenValue::Symbol(Symbol::RBracket), pos.span_to(&self.position), txt))
+            }
+            else if let Some(txt) = code.splice_start("{", &mut self.position) {
+                brace_depth += 1;
+                tokens.push(Token::new(TokenValue::Symbol(Symbol::LBrace), pos.span_to(&self.position), txt))
+            }
+            else if let Some(txt) = code.splice_start("}", &mut self.position) {
+                if brace_depth == 0 {
+                    return Ok(tokens) // we return Ok here for f-string parsing.
+                } else {
+                    brace_depth -= 1;
+                }
+                tokens.push(Token::new(TokenValue::Symbol(Symbol::RBrace), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start("@", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::Symbol(Symbol::Decorator), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::Symbol(Symbol::Decorator), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start("...", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::Ellipsis, pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::Ellipsis, pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start(".", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::Symbol(Symbol::Dot), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::Symbol(Symbol::Dot), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start(",", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::Symbol(Symbol::Comma), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::Symbol(Symbol::Comma), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start(":=", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::Symbol(Symbol::Walrus), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::Symbol(Symbol::Walrus), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start(":", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::Symbol(Symbol::Colon), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::Symbol(Symbol::Colon), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start("\\", &mut self.position) {
-                self.tokens.push(Token::new(TokenValue::LineContinuation, pos.span_to(&self.position), txt))
+                if brace_depth == 0 {
+                    tokens.push(Token::new(TokenValue::LineContinuation, pos.span_to(&self.position), txt))
+                }
             }
             else if let Some(n) = newlines_re.captures(code) {
                 let raw = &code[n.get(0).unwrap().range()];
                 self.position.advance(raw);
-                self.tokens.push(Token::new(TokenValue::LeadingWhitespace, pos.span_to(&self.position), raw))
+                if brace_depth > 0 {
+                    continue;
+                }
+                tokens.push(Token::new(TokenValue::LeadingWhitespace, pos.span_to(&self.position), raw))
             }
             else if let Some(s) = space_re.captures(code) {
                 self.position.advance(&code[s.get(0).unwrap().range()])
@@ -431,53 +593,142 @@ impl Lexer {
 
         }
 
-        Ok(())
+        Ok(tokens)
     }
 
 
-    fn lex_string(&mut self, prefix: &str, code: &str, pos: TextPosition) -> Result<Token> {
-        let mut string = "".to_string();
+    fn lex_string(&mut self, prefix: &str, raw_code: &str, pos: TextPosition, context: &mut LexerContext) -> Result<Token> {
+        let mut string = String::new();
 
         let is_raw = prefix.contains("r");
         let is_format = prefix.contains("f");
         let is_bytes = prefix.contains("b");
         let prefix_len: usize = if is_raw { 1 } else { 0 } + if is_format { 1 } else { 0 } + if is_bytes { 1 } else { 0 };
         let delimiter = &prefix[prefix_len..];
+        let is_multiline = delimiter.len() == 3;
 
         self.position.advance(prefix);
-        let code = &code[prefix.len()..];
+        let code = &raw_code[prefix.len()..];
 
-        if is_format {
+        if is_format { // NOTE: format strings are mutually exclusive to byte strings
             let relative = self.position.index;
 
-            loop {
+            let mut parts = Vec::new();
+
+            'f_str: loop {
                 let start = self.position.index - relative;
                 let slice = &code[start..];
 
-
-
-            }
-        } else {
-            let mut i = 0;
-            loop {
-                let next = &code[i..];
-                if next.starts_with("\\") {
-                    i += next.char_indices().nth(2).unwrap().0
-                } else if next.starts_with(delimiter) {
-                    break;
+                if slice.starts_with("\\{") {
+                    string += "\\";
+                    self.position.increment(1);
                 }
-            }
-            string += &code[0..i];
-            self.position.advance(&string);
-            self.position.advance(delimiter);
+                else if slice.starts_with("\\\n") {
+                    self.position.advance("\\\n");
+                }
+                else if slice.starts_with("\\") {
+                    let start = &slice[0..2];
+                    string += start;
+                    self.position.advance(start);
+                }
+                else if slice.starts_with("{{") {
+                    string += "{";
+                    self.position.increment(2);
+                }
+                else if slice.starts_with("}}") {
+                    string += "}";
+                    self.position.increment(2);
+                }
+                else if slice.starts_with("}") {
+                    let err = format!(
+                        "  File \"{}\", line {}\n{}\n{}\nSyntaxError: f-string: single '}}' is not allowed",
+                        context.file_name, self.position.line, self.get_line_by_number(self.position.line).unwrap(), Self::get_error_squiggle(self.position.column, 1)
+                    );
+                    context.set_error(err.clone());
+                    return Err(anyhow!("{err}"))
+                }
+                else if slice.starts_with("{") {
+                    self.position.increment(1);
+                    parts.push(PartialFString::StringContent(string));
+                    string = String::new();
+                    let next = &slice[1..];
+                    let tokens = self.lex_normal(next, context, self.position.index)?;
+                    parts.push(PartialFString::TokenStream(tokens));
+                }
+                else if slice.starts_with(delimiter) {
+                    self.position.advance(delimiter);
+                    parts.push(PartialFString::StringContent(string));
+                    break 'f_str;
+                }
+                else if slice.starts_with("\n") {
+                    if is_multiline {
+                        string += "\n";
+                        self.position.advance("\n");
+                    } else {
+                        let err = format!(
+                            "  File \"{}\", line {}\n{}\n{}\nSyntaxError: unterminated string literal (detected at line {})",
+                            context.file_name, pos.line, self.get_line_by_number(pos.line).unwrap(), Self::get_error_squiggle(pos.column, 3), pos.line
+                        );
+                        context.set_error(err.clone());
+                        return Err(anyhow!("{err}"))
+                    }
+                }
+                else {
+                    let c = &slice[0..1];
+                    self.position.advance(c);
+                }
 
-            let literal_size = string.len() + prefix_len + (2 * delimiter.len());
+            }
+
+            let literal = &code[pos.index..self.position.index];
 
             if !is_raw {
-
+                for part in &mut parts {
+                    match part {
+                        PartialFString::StringContent(s) => *part = PartialFString::StringContent(unescape(&s, context, true).unwrap()),
+                        _ => {}
+                    }
+                }
             }
 
-            Ok(Token::new(TokenValue::StringLiteral(string), pos.span_to(&self.position), &code[0..literal_size]))
+            Ok(Token::new(TokenValue::FString(parts), pos.span_to(&self.position), literal))
+        } else {
+            let relative = self.position.index;
+            loop {
+                let start = self.position.index - relative;
+                let next = &code[start..];
+                if next.starts_with("\\\n") {
+                    self.position.advance("\\\n");
+                } else if next.starts_with("\\") {
+                    string += &code[0..2];
+                    self.position.advance(&code[0..2]);
+                } else if next.starts_with(delimiter) {
+                    break;
+                } else {
+                    string += &code[0..1];
+                    self.position.advance(&code[0..1]);
+                }
+            }
+            self.position.advance(delimiter);
+
+            let literal_size = self.position.index - pos.index;
+
+            if !is_raw {
+                match unescape(&string, context, !is_bytes) {
+                    Ok(s) => string = s,
+                    Err(e) => {
+                        context.set_error(e.clone());
+                        return Err(anyhow!("{e}"))
+                    }
+                }
+            }
+
+            if is_bytes {
+                Ok(Token::new(TokenValue::BytesLiteral(string.into_bytes()), pos.span_to(&self.position), &raw_code[0..literal_size]))
+            } else {
+                Ok(Token::new(TokenValue::StringLiteral(string), pos.span_to(&self.position), &raw_code[0..literal_size]))
+            }
+
         }
 
     }
