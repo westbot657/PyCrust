@@ -6,7 +6,7 @@ This is currently under development and is far from usable.
 
 Feature checklist
 - [x] Correctly lex python
-- [ ] Correctly parse python
+- [ ] Correctly parse python  [grammar rules](https://docs.python.org/3/reference/grammar.html)
 - [ ] Generate wasm-compatible byte code
 - [ ] python source imports
 - [ ] rust module imports

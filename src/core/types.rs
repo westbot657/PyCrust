@@ -258,6 +258,8 @@ pub enum TokenValue {
     None,
     LineContinuation,
     Ellipsis,
+    EndMarker,
+    Newline,
 }
 
 #[cfg_attr(feature = "serial", derive(serde::Serialize, serde::Deserialize))]
@@ -353,11 +355,13 @@ impl Display for TokenValue {
             TokenValue::Comment(_) => write!(f, "comment"),
             TokenValue::FString(parts) => write!(f, "{{\n{}\n}}::f-string", parts.iter().map(|p| p.to_string()).collect::<Vec<String>>().join(",\n")),
             TokenValue::LeadingWhitespace => write!(f, "leading-whitespace"),
-            TokenValue::Indent => write!(f, "indent"),
-            TokenValue::Dedent => write!(f, "dedent"),
+            TokenValue::Indent => write!(f, "INDENT"),
+            TokenValue::Dedent => write!(f, "DEDENT"),
             TokenValue::None => write!(f, "none"),
             TokenValue::LineContinuation => write!(f, "line-continuation"),
             TokenValue::Ellipsis => write!(f, "ellipsis"),
+            TokenValue::EndMarker => write!(f, "END-MARKER"),
+            TokenValue::Newline => write!(f, "NEWLINE"),
         }
     }
 }

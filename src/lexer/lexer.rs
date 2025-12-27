@@ -159,6 +159,8 @@ impl Lexer {
 
         self.cleanup_tokens()?;
 
+        self.tokens.push(Token::new(TokenValue::EndMarker, self.position.span_to(&self.position), ""));
+
         Ok(context.to_result())
     }
 
@@ -253,6 +255,7 @@ impl Lexer {
                     match n {
                         Token { value: TokenValue::LeadingWhitespace, .. } => {
                             if Self::clip_leading_whitespace(n) {
+                                tokens.push(Token::new(TokenValue::Newline, n.span.clone(), "\n"));
                                 self.handle_indentation(n, &mut indentation, &mut tokens)?
                             }
                         }
@@ -260,6 +263,7 @@ impl Lexer {
                     }
                 }
                 Token { value: TokenValue::LeadingWhitespace, .. } => {
+                    tokens.push(Token::new(TokenValue::Newline, tok.span.clone(), "\n"));
                     self.handle_indentation(&mut tok, &mut indentation, &mut tokens)?
                 }
                 _ => {
