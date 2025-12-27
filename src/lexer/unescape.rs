@@ -161,7 +161,7 @@ fn process_unicode(iter: &mut Peekable<CharIndices>, output: &mut String, size8:
         *output += &valid.to_string();
         Ok(())
     } else {
-        Err("Syntax error: (unicode error) 'unicodeescape' codec can't decode bytes in position 0-9: illegal Unicode character".to_string())
+        Err("SyntaxError: (unicode error) 'unicodeescape' codec can't decode bytes in position 0-9: illegal Unicode character".to_string())
     }
 
 }
