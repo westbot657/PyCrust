@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::mem;
-use crate::core::types::{Comparator, Keyword, Number, NumericValue, Operator, PartialFString, Symbol, TextPosition, Token, TokenValue, Tokens};
+use crate::core::types::{Comparator, Keyword, Number, NumericValue, Operator, PartialFString, Symbol, TextPosition, TextSpan, Token, TokenValue, Tokens};
 use anyhow::{anyhow, Result};
 use regex::Regex;
 use crate::lexer::unescape::unescape;
@@ -247,7 +247,7 @@ impl Lexer {
                 break;
             };
 
-            match tok {
+            match &mut tok {
                 Token { value: TokenValue::LineContinuation, .. } => {
                     let Some(n) = iter.peek_mut() else {
                         return Err(anyhow!("Unexpected EOF after '\\'"))
@@ -265,6 +265,30 @@ impl Lexer {
                 Token { value: TokenValue::LeadingWhitespace, .. } => {
                     tokens.push(Token::new(TokenValue::Newline, tok.span.clone(), "\n"));
                     self.handle_indentation(&mut tok, &mut indentation, &mut tokens)?
+                }
+                Token { value: TokenValue::StringLiteral(_), .. } => {
+                    while let Some(_) = iter.peek() {
+                        if !tok.str_concat(&mut iter).map_err(|e| anyhow!("{e}"))? {
+                            break;
+                        }
+                    }
+                    tokens.push(tok);
+                }
+                Token { value: TokenValue::FString(_), .. } => {
+                    while let Some(_) = iter.peek() {
+                        if !tok.str_concat(&mut iter).map_err(|e| anyhow!("{e}"))? {
+                            break;
+                        }
+                    }
+                    tokens.push(tok);
+                }
+                Token { value: TokenValue::BytesLiteral(_), .. } => {
+                    while let Some(_) = iter.peek() {
+                        if !tok.byte_concat(&mut iter).map_err(|e| anyhow!("{e}"))? {
+                            break
+                        }
+                    }
+                    tokens.push(tok)
                 }
                 _ => {
                     tokens.push(tok)
@@ -582,6 +606,9 @@ impl Lexer {
             else if let Some(txt) = code.splice_start(":=", &mut self.position) {
                 tokens.push(Token::new(TokenValue::Symbol(Symbol::Walrus), pos.span_to(&self.position), txt))
             }
+            else if let Some(txt) = code.splice_start(";", &mut self.position) {
+                tokens.push(Token::new(TokenValue::Symbol(Symbol::Semicolon), pos.span_to(&self.position), txt))
+            }
             else if code.starts_with(":") {
                 if in_f_string && brace_depth == 0 {
                     return Ok(tokens)
@@ -635,7 +662,7 @@ impl Lexer {
 
     #[cfg(not(feature = "named-unicode"))]
     fn translate_unicode_name(&self, name: &str, _start_idx: usize, context: &mut LexerContext) -> Result<String> {
-        context.add_warning(format!("{}:{}: SyntaxWarning: rust feature not enabled: 'named-unicode'", context.file_name, self.position.line));
+        context.add_warning(format!("{}:{}: SyntaxWarning: pycrust feature not enabled: 'named-unicode'", context.file_name, self.position.line));
         Ok(format!("\\N{{{name}}}"))
     }
 
@@ -763,13 +790,13 @@ impl Lexer {
                 if next.starts_with("\\\n") {
                     self.position.advance("\\\n");
                 } else if next.starts_with("\\") {
-                    string += &code[0..2];
-                    self.position.advance(&code[0..2]);
+                    string += &next[0..2];
+                    self.position.advance(&next[0..2]);
                 } else if next.starts_with(delimiter) {
                     break;
                 } else {
-                    string += &code[0..1];
-                    self.position.advance(&code[0..1]);
+                    string += &next[0..1];
+                    self.position.advance(&next[0..1]);
                 }
             }
             self.position.advance(delimiter);

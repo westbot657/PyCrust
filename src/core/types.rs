@@ -1,4 +1,5 @@
 use std::fmt::{Display, Formatter};
+use std::iter::Peekable;
 use std::ops::MulAssign;
 use std::slice::Iter;
 use std::vec::IntoIter;
@@ -24,7 +25,7 @@ impl TextSpan {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "serial", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "snake_case"))]
 pub enum Keyword {
     Return,
@@ -95,7 +96,7 @@ impl Keyword {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "serial", derive(serde::Serialize, serde::Deserialize))]
 pub enum Symbol {
     #[cfg_attr(feature = "serial", serde(rename="("))]
@@ -124,9 +125,11 @@ pub enum Symbol {
     Colon,
     #[cfg_attr(feature = "serial", serde(rename=":="))]
     Walrus,
+    #[cfg_attr(feature = "serial", serde(rename=";"))]
+    Semicolon,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "serial", derive(serde::Serialize, serde::Deserialize))]
 pub enum Comparator {
     #[cfg_attr(feature = "serial", serde(rename="=="))]
@@ -143,7 +146,7 @@ pub enum Comparator {
     Ge,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "serial", derive(serde::Serialize, serde::Deserialize))]
 pub enum Operator {
     #[cfg_attr(feature = "serial", serde(rename="+"))]
@@ -174,7 +177,7 @@ pub enum Operator {
     BitNot,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "serial", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "snake_case"))]
 pub enum NumericValue {
     I64(i64),
@@ -223,21 +226,21 @@ impl MulAssign<i64> for NumericValue {
 }
 
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "serial", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "snake_case"))]
 pub enum Number {
     Real(NumericValue),
     Complex { real: NumericValue, imaginary: NumericValue },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "serial", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "snake_case"))]
 pub enum PartialFString {
     StringContent(String),
     TokenStream(Tokens, Vec<PartialFString>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "serial", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "snake_case"))]
 pub enum TokenValue {
     Symbol(Symbol),
@@ -263,7 +266,7 @@ pub enum TokenValue {
 }
 
 #[cfg_attr(feature = "serial", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Token {
     pub value: TokenValue,
     pub span: TextSpan,
@@ -278,6 +281,103 @@ impl Token {
             content: content.to_string(),
         }
     }
+
+    fn convert_str_to_f_str(&mut self) {
+        match self {
+            Token { value: TokenValue::StringLiteral(s), span, content } => {
+                let s = s.clone();
+                let span = span.clone();
+                let content = content.clone();
+                *self = Token {
+                    value: TokenValue::FString(vec![PartialFString::StringContent(s)]),
+                    span,
+                    content,
+                }
+            }
+            Token { value: TokenValue::FString(_), .. } => {}
+            _ => unreachable!("This function should only be called on string literal tokens")
+        }
+    }
+
+    fn merge_f_str(&mut self, other: &Token) {
+        match (&self, other) {
+            (
+                Token { value: TokenValue::FString(parts), span, content },
+                Token { value: TokenValue::FString(parts2), span: span2, content: content2 }
+            ) => {
+                let mut parts = parts.clone();
+                let mut p2 = parts2.clone();
+                parts.append(&mut p2);
+                let mut content = content.clone();
+                content += content2;
+                *self = Token {
+                    value: TokenValue::FString(parts),
+                    span: TextSpan::new(span.start.clone(), span2.end.clone()),
+                    content,
+                }
+            }
+            _ => unreachable!("This function should only be called with 2 f-string tokens")
+        }
+    }
+
+    pub fn str_concat(&mut self, iter: &mut Peekable<IntoIter<Token>>) -> Result<bool, String> {
+        match (&self, iter.peek().unwrap()) {
+            (
+                Token { value: TokenValue::StringLiteral(s), span, content },
+                Token { value: TokenValue::StringLiteral(s2), span: span2, content: content2 },
+            ) => {
+                *self = Token {
+                    value: TokenValue::StringLiteral(s.clone() + s2),
+                    span: TextSpan::new(span.start.clone(), span2.end.clone()),
+                    content: content.clone() + content2
+                };
+                let _ = iter.next().unwrap();
+                Ok(true)
+            }
+            (
+                Token { value: TokenValue::FString(_), .. },
+                Token { value: TokenValue::FString(_) | TokenValue::StringLiteral(_), .. },
+            ) => {
+                let mut r = iter.next().unwrap();
+                r.convert_str_to_f_str();
+                self.merge_f_str(&r);
+                Ok(true)
+            }
+            (
+                Token { value: TokenValue::StringLiteral(_), .. },
+                Token { value: TokenValue::FString(_), .. },
+            ) => {
+                self.convert_str_to_f_str();
+                let r = iter.next().unwrap();
+                self.merge_f_str(&r);
+                Ok(true)
+            }
+            _ => Ok(false)
+        }
+    }
+
+    pub fn byte_concat(&mut self, iter: &mut Peekable<IntoIter<Token>>) -> Result<bool, String> {
+        match (&self, iter.peek().unwrap()) {
+            (
+                Token { value: TokenValue::BytesLiteral(bytes), span, content },
+                Token { value: TokenValue::BytesLiteral(bytes2), span: span2, content: content2 }
+            ) => {
+                let mut bytes = bytes.clone();
+                let mut b2 = bytes2.clone();
+                bytes.append(&mut b2);
+
+                *self = Token {
+                    value: TokenValue::BytesLiteral(bytes),
+                    span: TextSpan::new(span.start.clone(), span2.end.clone()),
+                    content: content.clone() + content2
+                };
+                let _ = iter.next().unwrap();
+                Ok(true)
+            }
+            _ => Ok(false)
+        }
+    }
+
 }
 
 impl TextPosition {
@@ -372,7 +472,7 @@ impl Display for TextSpan {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "serial", derive(serde::Serialize, serde::Deserialize))]
 pub struct Tokens {
     tokens: Vec<Token>
