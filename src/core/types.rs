@@ -113,8 +113,6 @@ pub enum Symbol {
     RBrace,
     #[cfg_attr(feature = "serial", serde(rename="->"))]
     Arrow,
-    #[cfg_attr(feature = "serial", serde(rename="@"))]
-    Decorator,
     #[cfg_attr(feature = "serial", serde(rename="="))]
     Assign,
     #[cfg_attr(feature = "serial", serde(rename="."))]
@@ -175,6 +173,8 @@ pub enum Operator {
     BitXor,
     #[cfg_attr(feature = "serial", serde(rename="~"))]
     BitNot,
+    #[cfg_attr(feature = "serial", serde(rename="@"))]
+    MatMul,
 }
 
 #[derive(Debug, Clone)]

@@ -18,4 +18,6 @@ Feature checklist
 - [ ] Generators
 - [ ] Reflection
 - [ ] Additional magic methods
+- [ ] t-strings
+- [ ] async (with tokio probably?)
 

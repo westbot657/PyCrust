@@ -591,8 +591,11 @@ impl Lexer {
                 tokens.push(Token::new(TokenValue::Symbol(Symbol::RBrace), pos.span_to(&self.position), tref))
 
             }
+            else if let Some(txt) = code.splice_start("@=", &mut self.position) {
+                tokens.push(Token::new(TokenValue::AssignOperator(Operator::MatMul), pos.span_to(&self.position), txt))
+            }
             else if let Some(txt) = code.splice_start("@", &mut self.position) {
-                tokens.push(Token::new(TokenValue::Symbol(Symbol::Decorator), pos.span_to(&self.position), txt))
+                tokens.push(Token::new(TokenValue::Operator(Operator::MatMul), pos.span_to(&self.position), txt))
             }
             else if let Some(txt) = code.splice_start("...", &mut self.position) {
                 tokens.push(Token::new(TokenValue::Ellipsis, pos.span_to(&self.position), txt))
