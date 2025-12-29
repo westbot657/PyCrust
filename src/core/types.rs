@@ -1,7 +1,7 @@
 use std::fmt::{Display, Formatter};
 use std::iter::Peekable;
 use std::ops::MulAssign;
-use std::slice::Iter;
+use std::slice::{Iter, SliceIndex};
 use std::vec::IntoIter;
 
 #[derive(Debug, Clone)]
@@ -475,7 +475,7 @@ impl Display for TextSpan {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serial", derive(serde::Serialize, serde::Deserialize))]
 pub struct Tokens {
-    tokens: Vec<Token>
+    tokens: Vec<Token>,
 }
 
 impl Tokens {
@@ -500,6 +500,15 @@ impl Tokens {
     pub fn push(&mut self, token: Token) {
         self.tokens.push(token)
     }
+
+    pub fn into_parse_tokens(self) -> ParseTokens {
+        ParseTokens {
+            offset: 0,
+            tokens: self.tokens,
+            snapshots: Vec::new(),
+        }
+    }
+
 }
 
 impl From<Vec<Token>> for Tokens {
@@ -521,5 +530,47 @@ impl Display for Tokens {
         }
         Ok(())
     }
+}
+
+pub struct ParseTokens {
+    offset: usize,
+    tokens: Vec<Token>,
+    snapshots: Vec<usize>,
+}
+
+impl ParseTokens {
+
+    pub fn get(&self, index: usize) -> Option<&Token> {
+        self.tokens.get(self.offset + index)
+    }
+
+    pub fn consume_next(&mut self) -> Option<&Token> {
+        let t = self.tokens.get(self.offset);
+        if let Some(_) = t {
+            self.offset += 1;
+        };
+        t
+    }
+
+    pub fn backtrack(&mut self) {
+        if self.offset > 0 {
+            self.offset -= 1;
+        }
+    }
+
+    pub fn snapshot(&mut self) {
+        self.snapshots.push(self.offset);
+    }
+    
+    pub fn discard_snapshot(&mut self) {
+        self.snapshots.pop();
+    }
+    
+    pub fn restore(&mut self) {
+        if let Some(old) = self.snapshots.pop() {
+            self.offset = old;
+        }
+    }
+    
 }
 
