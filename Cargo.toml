@@ -17,6 +17,8 @@ named-unicode = ["dep:unicode_names2"]
 
 
 [dependencies]
+node_macro = { path = "node_macro" }
+
 anyhow = "1.0.100"
 
 regex = { version = "1.12.2", optional = true }

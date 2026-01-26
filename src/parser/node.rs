@@ -1,25 +1,40 @@
-use crate::core::types::Token;
+use node_macro::node;
+use crate::core::types::{Token, Tokens};
+use anyhow::{Result, anyhow, Ok};
 
-pub struct FileNode {
-    pub statements: StatementsNode,
+pub trait Node
+where
+    Self: Sized
+{
+    fn parse(tokens: &mut Tokens) -> anyhow::Result<Option<Self>>;
 }
 
+#[node]
+pub struct FileNode {
+    pub statements: StatementsNode,
+    #[pass_if(EndMarker)]
+    _end_marker: ()
+}
+
+#[node]
 pub struct EvalNode(pub ExpressionsNode);
 
 // GENERAL STATEMENTS
 // ==================
 
-pub struct StatementsNode {
-    pub statements: Vec<StatementNode>,
-}
+#[node]
+pub struct StatementsNode(#[one_or_more] pub Vec<StatementNode>);
 
+#[node]
 pub enum StatementNode {
     CompoundStatement(CompoundStmtNode),
     SimpleStatements(SimpleStmtsNode),
 }
 
-pub struct SimpleStmtsNode(pub Vec<SimpleStmtNode>);
+#[node]
+pub struct SimpleStmtsNode(#[one_or_more] #[sep(Symbol(Symbol::Semicolon), trailing)] pub Vec<SimpleStmtNode>);
 
+#[node]
 pub enum SimpleStmtNode {
     Assignment(AssignmentNode),
     TypeAlias(TypeAliasNode),
@@ -37,6 +52,7 @@ pub enum SimpleStmtNode {
     NonlocalStmt(NonlocalStmtNode),
 }
 
+#[node]
 pub enum CompoundStmtNode {
     FunctionDef(FunctionDefNode),
     IfStmt(IfStmtNode),
@@ -48,56 +64,101 @@ pub enum CompoundStmtNode {
     MatchStmt(MatchStmtNode),
 }
 
+#[node]
 pub enum AssignmentNode {
-    Typed { name: Token, annotation: ExpressionNode, value: Option<AnnotatedRhsNode> },
-    Unpacking { target: AssignmentNodeTarget, annotation: ExpressionNode, value: Option<AnnotatedRhsNode> },
-    Chained { targets: Vec<StarTargetsNode>, value: AnnotatedRhsNode},
-    Augmented { target: SingleTargetNode, operator: Token, value: AnnotatedRhsNode },
+    Typed {
+        #[token(Word(w))]
+        name: Token,
+        #[token(Symbol(Symbol::Colon))]
+        c: (),
+        annotation: ExpressionNode,
+        #[prefix(token(Symbol(Symbol::Assign)))]
+        value: Option<AnnotatedRhsNode>
+    },
+    Unpacking {
+        target: AssignmentNodeTarget,
+        #[token(Symbol(Symbol::Colon))]
+        c: (),
+        annotation: ExpressionNode,
+        #[prefix(token(Symbol(Symbol::Assign)))]
+        value: Option<AnnotatedRhsNode> },
+    Chained {
+        #[one_or_more]
+        #[postfix(token(Symbol(Symbol::Assign)))]
+        targets: Vec<StarTargetsNode>,
+        value: AnnotatedRhsNode,
+        #[fail_if(Symbol(Symbol::Assign))]
+        f: (),
+    },
+    Augmented {
+        target: SingleTargetNode,
+        operator: Token,
+        #[commit]
+        value: AnnotatedRhsNode
+    },
 }
 
+#[node]
 pub enum AssignmentNodeTarget {
     SingleTarget(SingleTargetNode),
     SingleSubscriptAttributeTarget(SingleSubscriptAttributeTargetNode),
 }
 
+#[node]
 pub enum AnnotatedRhsNode {
     YieldExpr(YieldExprNode),
     StarExpressions(StarExpressionsNode),
 }
 
+#[node]
 pub struct ReturnStmtNode {
     pub token: Token,
     pub value: StarExpressionsNode,
 }
 
+#[node]
 pub enum RaiseStmtNode {
-    RaiseNew { token: Token, value: ExpressionNode, from: Option<(Token, ExpressionNode)> },
-    ReRaise(Token),
+    RaiseNew {
+        #[token(Keyword(Keyword::Raise))]
+        token: Token,
+        value: ExpressionNode,
+        #[prefix(token(Keyword(Keyword::From)))]
+        from: Option<ExpressionNode>
+    },
+    ReRaise(#[token(Keyword(Keyword::Raise))] Token),
 }
 
-pub struct PassStmtNode(pub Token);
+#[node]
+pub struct PassStmtNode(#[token(Keyword(Keyword::Pass))] pub Token);
+#[node]
 pub struct BreakStmtNode(pub Token);
+#[node]
 pub struct ContinueStmtNode(pub Token);
 
 // 'global' ','.NAME+
+#[node]
 pub struct GlobalStmtNode {
     pub token: Token,
     pub names: Vec<Token>,
 }
 
 // 'nonlocal' ','.NAME+
+#[node]
 pub struct NonlocalStmtNode {
     pub token: Token,
     pub names: Vec<Token>,
 }
 
+#[node]
 pub struct DelStmtNode {
     pub token: Token,
     pub targets: DelTargetsNode,
 }
 
+#[node]
 pub struct YieldStmtNode(pub YieldExprNode);
 
+#[node]
 pub struct AssertStmtNode {
     pub token: Token,
     pub expr: ExpressionNode,
@@ -107,16 +168,19 @@ pub struct AssertStmtNode {
 // Import statements
 // -----------------
 
+#[node]
 pub enum ImportStmtNode {
     ImportName(ImportNameNode),
     ImportFrom(ImportFromNode),
 }
 
+#[node]
 pub struct ImportNameNode {
     pub token: Token,
     pub names: DottedAsNamesNode,
 }
 
+#[node]
 pub enum ImportFromNode {
     DottedName {
         from: Token,
@@ -132,30 +196,36 @@ pub enum ImportFromNode {
     },
 }
 
+#[node]
 pub enum ImportFromTargetsNode {
     TupleCapture(ImportFromAsNamesNode),
     OpenCapture(ImportFromAsNamesNode),
     Wildcard(Token),
 }
 
+#[node]
 pub struct ImportFromAsNamesNode {
     pub names: Vec<ImportFromAsNameNode>,
 }
 
+#[node]
 pub struct ImportFromAsNameNode {
     pub name: Token,
     pub alias: Option<Token>,
 }
 
+#[node]
 pub struct DottedAsNamesNode {
     pub names: Vec<DottedAsNameNode>,
 }
 
+#[node]
 pub struct DottedAsNameNode {
     pub name: DottedNameNode,
     pub alias: Option<Token>,
 }
 
+#[node]
 pub enum DottedNameNode {
     Attr { parent: Box<DottedNameNode>, name: Token },
     Name(Token),
@@ -167,15 +237,18 @@ pub enum DottedNameNode {
 // Common elements
 // ---------------
 
+#[node]
 pub enum BlockNode {
     Statements(StatementsNode),
     Simple(SimpleStmtsNode),
 }
 
+#[node]
 pub struct DecoratorsNode {
     pub decorators: Vec<DecoratorNode>
 }
 
+#[node]
 pub struct DecoratorNode {
     pub token: Token,
     pub expr: NamedExpressionNode,
@@ -184,11 +257,13 @@ pub struct DecoratorNode {
 // Class definitions
 // -----------------
 
+#[node]
 pub struct ClassDefNode {
     pub decorators: Option<DecoratorsNode>,
     pub class_def_raw: ClassDefRawNode,
 }
 
+#[node]
 pub struct ClassDefRawNode {
     pub token: Token,
     pub name: Token,
@@ -200,11 +275,13 @@ pub struct ClassDefRawNode {
 // Function definitions
 // --------------------
 
+#[node]
 pub struct FunctionDefNode {
     pub decorators: Option<DecoratorsNode>,
     pub function_def_raw: FunctionDefRawNode,
 }
 
+#[node]
 pub struct FunctionDefRawNode {
     pub is_async: bool,
     pub def: Token,
@@ -218,8 +295,10 @@ pub struct FunctionDefRawNode {
 // Function parameters
 // -------------------
 
+#[node]
 pub struct ParamsNode(pub ParametersNode);
 
+#[node]
 pub enum ParametersNode {
     SlashNoDefault { slash_no_default: SlashNoDefaultNode, param_no_default: Vec<ParamNoDefaultNode>, param_with_default: Vec<ParamWithDefaultNode>, star_etc: Option<StarEtcNode> },
     SlashWithDefault { slash_with_default: SlashWithDefaultNode, param_with_default: Vec<ParamWithDefaultNode>, star_etc: Option<StarEtcNode> },
@@ -228,17 +307,20 @@ pub enum ParametersNode {
     StarEtc(StarEtcNode),
 }
 
+#[node]
 pub struct SlashNoDefaultNode {
     pub params: Vec<ParamNoDefaultNode>,
     pub slash: Token,
 }
 
+#[node]
 pub struct SlashWithDefaultNode {
     pub params_no_default: Vec<ParamNoDefaultNode>,
     pub params_with_default: Vec<ParamWithDefaultNode>,
     pub slash: Token,
 }
 
+#[node]
 pub enum StarEtcNode {
     Unannotated { param_no_default: ParamNoDefaultNode, param_maybe_default: Vec<ParamMaybeDefaultNode>, kwds: Option<KwdsNode> },
     Annotated { param_no_default: ParamNoDefaultStarAnnotationNode, param_maybe_default: Vec<ParamMaybeDefaultNode>, kwds: Option<KwdsNode> },
@@ -246,42 +328,52 @@ pub enum StarEtcNode {
     Kwds(KwdsNode),
 }
 
+#[node]
 pub struct KwdsNode {
     pub token: Token,
     pub param: ParamNoDefaultNode,
 }
 
+#[node]
 pub struct ParamNoDefaultNode(pub ParamNode);
+#[node]
 pub struct ParamNoDefaultStarAnnotationNode(pub ParamStarAnnotationNode);
 
+#[node]
 pub struct ParamWithDefaultNode {
     pub param: ParamNode,
     pub default: DefaultNode,
 }
 
+#[node]
 pub struct ParamMaybeDefaultNode {
     pub param: ParamNode,
     pub default: Option<DefaultNode>,
 }
 
+#[node]
 pub struct ParamNode {
     pub name: Token,
     pub annotation: AnnotationNode,
 }
 
+#[node]
 pub struct ParamStarAnnotationNode {
     pub name: Token,
     pub annotation: StarAnnotationNode,
 }
 
+#[node]
 pub struct AnnotationNode {
     pub expr: ExpressionNode,
 }
 
+#[node]
 pub struct StarAnnotationNode {
     pub expr: StarExpressionNode,
 }
 
+#[node]
 pub struct DefaultNode {
     pub expr: ExpressionNode,
     // | invalid_default
@@ -290,6 +382,7 @@ pub struct DefaultNode {
 // If statement
 // ------------
 
+#[node]
 pub struct IfStmtNode {
     pub token: Token,
     pub expr: NamedExpressionNode,
@@ -297,11 +390,13 @@ pub struct IfStmtNode {
     pub else_branch: Option<ElseBranch>,
 }
 
+#[node]
 pub enum ElseBranch {
     Elif(Box<ElifStmtNode>),
     Else(Box<ElseBlockNode>),
 }
 
+#[node]
 pub struct ElifStmtNode {
     pub token: Token,
     pub expr: NamedExpressionNode,
@@ -309,6 +404,7 @@ pub struct ElifStmtNode {
     pub else_branch: Option<ElseBranch>,
 }
 
+#[node]
 pub struct ElseBlockNode {
     pub token: Token,
     pub block: BlockNode,
@@ -317,6 +413,7 @@ pub struct ElseBlockNode {
 // While statement
 // ---------------
 
+#[node]
 pub struct WhileStmtNode {
     pub token: Token,
     pub expr: NamedExpressionNode,
@@ -327,6 +424,7 @@ pub struct WhileStmtNode {
 // For statement
 // -------------
 
+#[node]
 pub struct ForStmtNode {
     pub is_async: bool,
     pub for_token: Token,
@@ -340,12 +438,14 @@ pub struct ForStmtNode {
 // With statement
 // --------------
 
+#[node]
 pub struct WithStmtNode {
     pub is_async: bool,
     pub items: Vec<WithItemNode>,
     pub block: BlockNode,
 }
 
+#[node]
 pub struct WithItemNode {
     pub expr: ExpressionNode,
     pub alias: Option<StarTargetNode>,
@@ -354,6 +454,7 @@ pub struct WithItemNode {
 // Try statement
 // -------------
 
+#[node]
 pub enum TryStmtNode {
     TryFinally { block: BlockNode, finally: FinallyBlockNode },
     TryExcept { block: BlockNode, excepts: Vec<ExceptBlockNode>, else_block: Option<ElseBlockNode>, finally: Option<FinallyBlockNode> },
@@ -363,6 +464,7 @@ pub enum TryStmtNode {
 // Except statement
 // ----------------
 
+#[node]
 pub enum ExceptBlockNode {
     Except { token: Token, expr: ExpressionNode, block: BlockNode },
     Alias { token: Token, expr: ExpressionNode, alias: Token, block: BlockNode },
@@ -370,28 +472,33 @@ pub enum ExceptBlockNode {
     CatchAll { token: Token, block: BlockNode },
 }
 
+#[node]
 pub enum ExceptStarBlockNode {
     Except { token: Token, expr: ExpressionNode, block: BlockNode },
     Alias { token: Token, expr: ExpressionNode, alias: Token, block: BlockNode },
     Multi { token: Token, expressions: ExpressionsNode, block: BlockNode },
 }
 
+#[node]
 pub struct FinallyBlockNode(pub Token, pub BlockNode);
 
 // Match statement
 // ---------------
 
+#[node]
 pub struct MatchStmtNode {
     pub token: Token,
     pub subject: SubjectExprNode,
     pub cases: Vec<CaseBlockNode>,
 }
 
+#[node]
 pub enum SubjectExprNode {
     StarExpr( StarNamedExpressionNode, Option<StarNamedExpressionsNode> ),
     Expr(NamedExpressionNode)
 }
 
+#[node]
 pub struct CaseBlockNode {
     pub token: Token,
     pub patterns: PatternsNode,
@@ -399,25 +506,30 @@ pub struct CaseBlockNode {
     pub block: BlockNode,
 }
 
+#[node]
 pub struct GuardNode {
     pub if_token: Token,
     pub expr: NamedExpressionNode,
 }
 
+#[node]
 pub enum PatternsNode {
     OpenSequence(OpenSequencePatternNode),
     Pattern(PatternNode),
 }
 
+#[node]
 pub struct PatternNode {
     pub or_pattern: OrPatternNode,
     pub alias: Option<PatternCaptureTargetNode>,
 }
 
+#[node]
 pub struct OrPatternNode {
     pub patterns: Vec<ClosedPatternNode>,
 }
 
+#[node]
 pub enum ClosedPatternNode {
     Literal(LiteralPatternNode),
     Capture(CapturePatternNode),
@@ -429,6 +541,7 @@ pub enum ClosedPatternNode {
     Class(ClassPatternNode),
 }
 
+#[node]
 pub enum LiteralPatternNode {
     // signed_number !('+' | '-')
     SignedNumber(SignedNumberNode),
@@ -439,6 +552,7 @@ pub enum LiteralPatternNode {
     False(Token),
 }
 
+#[node]
 pub enum LiteralExprNode {
     // signed_number !('+' | '-')
     SignedNumber(SignedNumberNode),
@@ -449,115 +563,141 @@ pub enum LiteralExprNode {
     False(Token),
 }
 
+#[node]
 pub struct ComplexNumberNode {
     pub real: SignedRealNumberNode,
     pub sign: Token,
     pub imaginary: ImaginaryNumberNode,
 }
 
+#[node]
 pub struct SignedNumberNode {
     pub is_negative: bool,
     pub number: Token,
 }
 
+#[node]
 pub struct SignedRealNumberNode {
     pub is_negative: bool,
     pub real: RealNumberNode,
 }
 
+#[node]
 pub struct RealNumberNode(pub Token);
 
+#[node]
 pub struct ImaginaryNumberNode(pub Token);
 
+#[node]
 pub struct CapturePatternNode(pub PatternCaptureTargetNode);
 
+#[node]
 pub struct PatternCaptureTargetNode {
     pub name: Token, // !"_" NAME !('.' | '(' | '=')
 }
 
+#[node]
 pub struct WildcardPatternNode(pub Token); // "_"
 
+#[node]
 pub struct ValuePatternNode {
     pub attr: AttrNode, // attr !('.' | '(' | '=')
 }
 
+#[node]
 pub struct AttrNode {
     pub name_or_attr: NameOrAttrNode,
     pub name: Token,
 }
 
+#[node]
 pub enum NameOrAttrNode {
     Attr(Box<AttrNode>),
     Name(Token)
 }
 
+#[node]
 pub struct GroupPatternNode {
     pub pattern: PatternNode, // '(' pattern ')'
 }
 
+#[node]
 pub enum SequencePatternNode {
     Maybe(Option<MaybeSequencePatternNode>), // '[' T? ']'
     Open(Option<OpenSequencePatternNode>), // '(' T? ')'
 }
 
+#[node]
 pub struct OpenSequencePatternNode {
     pub maybe_star_pattern: MaybeStarPatternNode,
     pub maybe_sequence: Option<MaybeSequencePatternNode>,
 }
 
+#[node]
 pub struct MaybeSequencePatternNode {
     pub patterns: Vec<MaybeStarPatternNode>, // ','.T+ ','?
 }
 
+#[node]
 pub enum MaybeStarPatternNode {
     StarPattern(StarPatternNode),
     Pattern(PatternNode),
 }
 
+#[node]
 pub enum StarPatternNode {
     Capture(PatternCaptureTargetNode),
     Wildcard(WildcardPatternNode),
 }
 
+#[node]
 pub enum MappingPatternNode {
-    Empty, // '{' '}'
+    Empty(Token, Token), // '{' '}'
     DoubleStar(DoubleStarPatternNode),
     ItemsDoubleStar(ItemsPatternNode, DoubleStarPatternNode),
     Items(ItemsPatternNode),
 }
 
+#[node]
 pub struct ItemsPatternNode {
     pub key_value_patterns: Vec<KeyValuePatternNode>,
 }
 
+#[node]
 pub struct KeyValuePatternNode {
     pub key: KeyExprAttr,
     pub pattern: PatternNode,
 }
 
+#[node]
 pub enum KeyExprAttr {
     LiteralExpr(LiteralExprNode),
     Attr(AttrNode),
 }
 
+#[node]
 pub struct DoubleStarPatternNode {
     pub capture_target: PatternCaptureTargetNode,
 }
 
+#[node]
 pub struct ClassPatternNode {
     pub name: NameOrAttrNode,
     pub positional: Option<PositionalPatternsNode>,
     pub keyword: Option<KeywordPatternsNode>,
 }
 
+#[node]
 pub struct PositionalPatternsNode {
     pub patterns: Vec<PatternNode>,
 }
 
+#[node]
 pub struct KeywordPatternsNode {
     pub patterns: Vec<KeywordPatternNode>,
 }
 
+#[node]
 pub struct KeywordPatternNode {
     pub name: Token,
     pub pattern: PatternNode,
@@ -566,6 +706,7 @@ pub struct KeywordPatternNode {
 // Type statement
 // --------------
 
+#[node]
 pub struct TypeAliasNode {
     pub token: Token,
     pub name: Token,
@@ -576,74 +717,92 @@ pub struct TypeAliasNode {
 // Type parameter declaration
 // --------------------------
 
+#[node]
 pub struct TypeParamsNode {
     pub type_param_seq: TypeParamSeqNode,
 }
 
+#[node]
 pub struct TypeParamSeqNode(pub Vec<TypeParamNode>); // ','.T+ [',']
 
+#[node]
 pub enum TypeParamNode {
     Named { name: Token, bound: Option<TypeParamBoundNode>, default: Option<TypeParamDefaultNode> },
     Star { name: Token, default: Option<TypeParamStarredDefaultNode> },
     DoubleStar { name: Token, default: Option<TypeParamDefaultNode> },
 }
 
+#[node]
 pub struct TypeParamBoundNode(pub ExpressionNode);
+#[node]
 pub struct TypeParamDefaultNode(pub ExpressionNode);
+#[node]
 pub struct TypeParamStarredDefaultNode(pub StarExpressionNode);
 
 // EXPRESSIONS
 // ===========
 
+#[node]
 pub struct ExpressionsNode {
     pub expressions: Vec<ExpressionNode>,
 }
 
+#[node]
 pub enum ExpressionNode {
     Ternary { truthy: DisjunctionNode, condition: DisjunctionNode, falsey: Box<ExpressionNode> },
     Disjunction(DisjunctionNode),
     Lambda(LambdaDefNode),
 }
 
+#[node]
 pub enum YieldExprNode {
     From(ExpressionNode),
     Direct(Option<StarExpressionsNode>),
 }
 
+#[node]
 pub struct StarExpressionsNode(pub Vec<StarExpressionNode>);
 
+#[node]
 pub enum StarExpressionNode {
     Starred(BitwiseOrNode),
     Expr(ExpressionNode),
 }
 
+#[node]
 pub struct StarNamedExpressionsNode(pub Vec<StarNamedExpressionNode>);
 
+#[node]
 pub enum StarNamedExpressionNode {
     Starred(BitwiseOrNode),
     Expr(NamedExpressionNode)
 }
 
+#[node]
 pub struct AssignmentExpressionNode {
     pub name: Token,
     pub expr: ExpressionNode,
 }
 
+#[node]
 pub enum NamedExpressionNode {
     Assignment(AssignmentExpressionNode),
     Expr(ExpressionNode), // expression !':='
 }
 
+#[node]
 pub struct DisjunctionNode {
     pub first: ConjunctionNode,
     pub more: Vec<ConjunctionNode>,
 }
 
+#[node]
 pub struct ConjunctionNode {
     pub first: InversionNode,
     pub more: Vec<InversionNode>,
 }
 
+#[node]
 pub enum InversionNode {
     Not(Box<InversionNode>),
     Comp(ComparisonNode),
@@ -652,11 +811,13 @@ pub enum InversionNode {
 // Comparison operators
 // --------------------
 
+#[node]
 pub struct ComparisonNode {
     pub bitwise_or: Box<BitwiseOrNode>,
     pub compare_pairs: Vec<CompareOpBitwiseOrPair>,
 }
 
+#[node]
 pub enum CompareOpBitwiseOrPair {
     Eq(Box<BitwiseOrNode>),
     Ne(Box<BitwiseOrNode>),
@@ -670,21 +831,25 @@ pub enum CompareOpBitwiseOrPair {
     Is(Box<BitwiseOrNode>),
 }
 
+#[node]
 pub enum BitwiseOrNode {
     Or(Box<BitwiseOrNode>, BitwiseXorNode),
     Xor(BitwiseXorNode)
 }
 
+#[node]
 pub enum BitwiseXorNode {
     Xor(Box<BitwiseXorNode>, BitwiseAndNode),
     And(BitwiseAndNode)
 }
 
+#[node]
 pub enum BitwiseAndNode {
     And(Box<BitwiseAndNode>, ShiftExprNode),
     Shift(ShiftExprNode)
 }
 
+#[node]
 pub enum ShiftExprNode {
     Shl(Box<ShiftExprNode>, SumNode),
     Shr(Box<ShiftExprNode>, SumNode),
@@ -694,12 +859,14 @@ pub enum ShiftExprNode {
 // Arithmetic operators
 // --------------------
 
+#[node]
 pub enum SumNode {
     Add(Box<SumNode>, TermNode),
     Sub(Box<SumNode>, TermNode),
     Term(TermNode),
 }
 
+#[node]
 pub enum TermNode {
     Mul(Box<TermNode>, FactorNode),
     Div(Box<TermNode>, FactorNode),
@@ -709,6 +876,7 @@ pub enum TermNode {
     Factor(FactorNode),
 }
 
+#[node]
 pub enum FactorNode {
     Pos(Box<FactorNode>),
     Neg(Box<FactorNode>),
@@ -716,6 +884,7 @@ pub enum FactorNode {
     Power(PowerNode),
 }
 
+#[node]
 pub enum PowerNode {
     Pow(AwaitPrimaryNode, Box<FactorNode>),
     Primary(AwaitPrimaryNode),
@@ -724,11 +893,13 @@ pub enum PowerNode {
 // Primary elements
 // ----------------
 
+#[node]
 pub struct AwaitPrimaryNode {
     pub is_await: bool,
     pub primary: PrimaryNode,
 }
 
+#[node]
 pub enum PrimaryNode {
     DotName(Box<PrimaryNode>, Token),
     Genexp(Box<PrimaryNode>, GenexpNode),
@@ -737,21 +908,25 @@ pub enum PrimaryNode {
     Atom(AtomNode),
 }
 
+#[node]
 pub enum SlicesNode {
     Slice(SliceNode),
     Multi(Vec<SliceOrStarredExpr>),
 }
 
+#[node]
 pub enum SliceOrStarredExpr {
     Slice(SliceNode),
     Starred(StarredExpressionNode),
 }
 
+#[node]
 pub enum SliceNode {
     Literal { start: Option<ExpressionNode>, end: Option<ExpressionNode>, step: Option<ExpressionNode> },
     Expr(NamedExpressionNode),
 }
 
+#[node]
 pub enum AtomNode {
     Name(Token),
     True(Token),
@@ -770,6 +945,7 @@ pub enum AtomNode {
     SetComp(SetCompNode),
 }
 
+#[node]
 pub enum GroupNode {
     Yield(YieldExprNode),
     Named(NamedExpressionNode),
@@ -778,14 +954,17 @@ pub enum GroupNode {
 // Lambda functions
 // ----------------
 
+#[node]
 pub struct LambdaDefNode {
     pub token: Token,
     pub params: Option<LambdaParamsNode>,
     pub expr: Box<ExpressionNode>,
 }
 
+#[node]
 pub struct LambdaParamsNode(pub LambdaParametersNode);
 
+#[node]
 pub enum LambdaParametersNode {
     SlashNoDefault {
         slash_no_default: LambdaSlashNoDefaultNode,
@@ -810,17 +989,20 @@ pub enum LambdaParametersNode {
     StarEtc(LambdaStarEtcNode),
 }
 
+#[node]
 pub struct LambdaSlashNoDefaultNode {
     pub params: Vec<LambdaParamNoDefaultNode>,
     pub slash: Token,
 }
 
+#[node]
 pub struct LambdaSlashWithDefaultNode {
     pub params_no_default: Vec<LambdaParamNoDefaultNode>,
     pub params_with_default: Vec<LambdaParamWithDefaultNode>,
     pub slash: Token,
 }
 
+#[node]
 pub enum LambdaStarEtcNode {
     Star {
         param_no_default: LambdaParamNoDefaultNode,
@@ -834,23 +1016,28 @@ pub enum LambdaStarEtcNode {
     Kwds(LambdaKwdsNode),
 }
 
+#[node]
 pub struct LambdaKwdsNode {
     pub token: Token,
     pub param: LambdaParamNoDefaultNode,
 }
 
+#[node]
 pub struct LambdaParamNoDefaultNode(pub LambdaParamNode);
 
+#[node]
 pub struct LambdaParamWithDefaultNode {
     pub param: LambdaParamNode,
     pub default: DefaultNode,
 }
 
+#[node]
 pub struct LambdaParamMaybeDefaultNode {
     pub param: LambdaParamNode,
     pub default: Option<DefaultNode>,
 }
 
+#[node]
 pub struct LambdaParamNode {
     pub name: Token,
 }
@@ -859,29 +1046,39 @@ pub struct LambdaParamNode {
 
 // LITERALS
 // ========
+#[node]
 pub struct StringsNode(pub Token);
+#[node]
 pub struct ListNode(pub Option<StarNamedExpressionsNode>);
+#[node]
 pub struct TupleNode(pub Option<(Box<StarNamedExpressionNode>, Option<StarNamedExpressionsNode>)>);
+#[node]
 pub struct SetNode(pub StarNamedExpressionsNode);
 
 // Dicts
 // -----
 
+#[node]
 pub struct DictNode(pub Option<DoubleStarredKVPairsNode>);
+#[node]
 pub struct DoubleStarredKVPairsNode(pub Vec<DoubleStarredKVPairNode>);
 
+#[node]
 pub enum DoubleStarredKVPairNode {
     Starred(Box<BitwiseOrNode>),
     Pair(Box<KVPairNode>),
 }
 
+#[node]
 pub struct KVPairNode(pub ExpressionNode, pub ExpressionNode);
 
 // Comprehensions & Generators
 // ---------------------------
 
+#[node]
 pub struct ForIfClausesNode(pub Vec<ForIfClauseNode>);
 
+#[node]
 pub struct ForIfClauseNode {
     pub is_async: bool,
     pub for_token: Token,
@@ -891,21 +1088,25 @@ pub struct ForIfClauseNode {
     pub guards: Vec<(Token, DisjunctionNode)>,
 }
 
+#[node]
 pub struct ListCompNode {
     pub named: NamedExpressionNode,
     pub clauses: ForIfClausesNode,
 }
 
+#[node]
 pub struct SetCompNode {
     pub named: NamedExpressionNode,
     pub clauses: ForIfClausesNode,
 }
 
+#[node]
 pub struct GenexpNode {
     pub named: NamedExpressionNode,
     pub clauses: ForIfClausesNode,
 }
 
+#[node]
 pub struct DictCompNode {
     pub kv_pair: KVPairNode,
     pub clauses: ForIfClausesNode,
@@ -914,30 +1115,37 @@ pub struct DictCompNode {
 // FUNCTION CALL ARGUMENTS
 // =======================
 
+#[node]
 pub struct ArgumentsNode(pub ArgsNode);
 
+#[node]
 pub enum ArgsNode {
     Expr(Vec<StarredOrNamedExpr>, Option<KwargsNode>),
     Kwargs(KwargsNode),
 }
 
+#[node]
 pub enum StarredOrNamedExpr {
     Starred(StarredExpressionNode),
     Named(NamedExpressionNode),
 }
 
+#[node]
 pub struct KwargsNode {
     pub kwargs_or_starred: Vec<KwargOrStarredNode>,
     pub kwargs_or_double_starred: Vec<KwargOrDoubleStarredNode>,
 }
 
+#[node]
 pub struct StarredExpressionNode(pub ExpressionNode);
 
+#[node]
 pub enum KwargOrStarredNode {
     Kwarg(Token, ExpressionNode),
     Starred(StarredExpressionNode),
 }
 
+#[node]
 pub enum KwargOrDoubleStarredNode {
     Kwarg(Token, ExpressionNode),
     Starred(ExpressionNode),
@@ -949,21 +1157,27 @@ pub enum KwargOrDoubleStarredNode {
 // Generic targets
 // ---------------
 
+#[node]
 pub struct StarTargetsNode(pub Vec<StarTargetNode>);
+#[node]
 pub struct StarTargetsListSeq(pub Vec<StarTargetNode>);
+#[node]
 pub struct StarTargetsTupleSeq(pub Vec<StarTargetNode>);
 
+#[node]
 pub struct StarTargetNode {
     pub is_starred: bool,
     pub target: TargetWithStarAtomNode,
 }
 
+#[node]
 pub enum TargetWithStarAtomNode {
     Named(TPrimaryNode, Token), // !t_lookahead
     Slices(TPrimaryNode, SliceNode), // !t_lookahead
     StarAtom(StarAtomNode),
 }
 
+#[node]
 pub enum StarAtomNode {
     Name(Token),
     Expr(Box<TargetWithStarAtomNode>),
@@ -971,17 +1185,20 @@ pub enum StarAtomNode {
     List(StarTargetsListSeq),
 }
 
+#[node]
 pub enum SingleTargetNode {
     Subscript(SingleSubscriptAttributeTargetNode),
     Named(Token),
     // '(' single_target ')'
 }
 
+#[node]
 pub enum SingleSubscriptAttributeTargetNode {
     Named(TPrimaryNode, Token), // !t_lookahead
     Slices(TPrimaryNode, SlicesNode), // !t_lookahead
 }
 
+#[node]
 pub enum TPrimaryNode {
     Named(Box<Self>, Token), // '.' NAME &t_lookahead
     Slices(Box<Self>, SliceNode), // '[' slices ']' &t_lookahead
@@ -995,14 +1212,17 @@ pub enum TPrimaryNode {
 // Targets for del statements
 // --------------------------
 
-pub struct DelTargetsNode(Vec<DelTargetNode>);
+#[node]
+pub struct DelTargetsNode(pub Vec<DelTargetNode>);
 
+#[node]
 pub enum DelTargetNode {
     Named(TPrimaryNode, Token), // '.' NAME !t_lookahead
     Slices(TPrimaryNode, SlicesNode), // '[' slices ']' !t_lookahead
     Atom(DelTAtomNode),
 }
 
+#[node]
 pub enum DelTAtomNode {
     Name(Token),
     Single(Box<DelTargetNode>),

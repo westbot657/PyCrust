@@ -1,7 +1,7 @@
 use std::fmt::{Display, Formatter};
 use std::iter::Peekable;
 use std::ops::MulAssign;
-use std::slice::{Iter, SliceIndex};
+use std::slice::Iter;
 use std::vec::IntoIter;
 
 #[derive(Debug, Clone)]
