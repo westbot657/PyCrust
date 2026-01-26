@@ -1,23 +1,23 @@
 use node_macro::node;
-use crate::core::types::{Token, Tokens};
+use crate::core::types::*;
 use anyhow::{Result, anyhow, Ok};
 
 pub trait Node
 where
     Self: Sized
 {
-    fn parse(tokens: &mut Tokens) -> anyhow::Result<Option<Self>>;
+    fn parse(tokens: &mut ParseTokens) -> Result<Option<Self>>;
 }
 
 #[node]
 pub struct FileNode {
     pub statements: StatementsNode,
-    #[pass_if(EndMarker)]
+    #[pass_if(TokenValue::EndMarker)]
     _end_marker: ()
 }
 
 #[node]
-pub struct EvalNode(pub ExpressionsNode);
+pub struct EvalNode(pub ExpressionsNode, #[token(TokenValue::Newline)] Vec<Token>, #[pass_if(TokenValue::EndMarker)] ());
 
 // GENERAL STATEMENTS
 // ==================
@@ -32,7 +32,7 @@ pub enum StatementNode {
 }
 
 #[node]
-pub struct SimpleStmtsNode(#[one_or_more] #[sep(Symbol(Symbol::Semicolon), trailing)] pub Vec<SimpleStmtNode>);
+pub struct SimpleStmtsNode(#[one_or_more] #[sep(TokenValue::Symbol(Symbol::Semicolon), trailing)] pub Vec<SimpleStmtNode>);
 
 #[node]
 pub enum SimpleStmtNode {
@@ -65,33 +65,38 @@ pub enum CompoundStmtNode {
 }
 
 #[node]
+pub struct AssignmentNodeValueInner(#[token(TokenValue::Symbol(Symbol::Assign))] (), AnnotatedRhsNode );
+
+#[node]
+pub struct AssignmentNodeChainedTargetsInner(StarTargetsNode, #[token(TokenValue::Symbol(Symbol::Assign))] ());
+
+#[node]
 pub enum AssignmentNode {
     Typed {
-        #[token(Word(w))]
+        #[token(TokenValue::Word(_))]
         name: Token,
-        #[token(Symbol(Symbol::Colon))]
+        #[token(TokenValue::Symbol(Symbol::Colon))]
         c: (),
         annotation: ExpressionNode,
-        #[prefix(token(Symbol(Symbol::Assign)))]
-        value: Option<AnnotatedRhsNode>
+        value: Option<AssignmentNodeValueInner>
     },
     Unpacking {
         target: AssignmentNodeTarget,
-        #[token(Symbol(Symbol::Colon))]
+        #[token(TokenValue::Symbol(Symbol::Colon))]
         c: (),
         annotation: ExpressionNode,
-        #[prefix(token(Symbol(Symbol::Assign)))]
-        value: Option<AnnotatedRhsNode> },
+        value: Option<AssignmentNodeValueInner>
+    },
     Chained {
         #[one_or_more]
-        #[postfix(token(Symbol(Symbol::Assign)))]
-        targets: Vec<StarTargetsNode>,
+        targets: Vec<AssignmentNodeChainedTargetsInner>,
         value: AnnotatedRhsNode,
-        #[fail_if(Symbol(Symbol::Assign))]
+        #[fail_if(TokenValue::Symbol(Symbol::Assign))]
         f: (),
     },
     Augmented {
         target: SingleTargetNode,
+        #[token(TokenValue::AssignOperator(_))]
         operator: Token,
         #[commit]
         value: AnnotatedRhsNode
@@ -100,7 +105,7 @@ pub enum AssignmentNode {
 
 #[node]
 pub enum AssignmentNodeTarget {
-    SingleTarget(SingleTargetNode),
+    SingleTarget(#[token(TokenValue::Symbol(Symbol::LParen))] (), SingleTargetNode, #[token(TokenValue::Symbol(Symbol::RParen))] ()),
     SingleSubscriptAttributeTarget(SingleSubscriptAttributeTargetNode),
 }
 
@@ -112,6 +117,7 @@ pub enum AnnotatedRhsNode {
 
 #[node]
 pub struct ReturnStmtNode {
+    #[token(TokenValue::Keyword(Keyword::Return))]
     pub token: Token,
     pub value: StarExpressionsNode,
 }
@@ -119,38 +125,47 @@ pub struct ReturnStmtNode {
 #[node]
 pub enum RaiseStmtNode {
     RaiseNew {
-        #[token(Keyword(Keyword::Raise))]
+        #[token(TokenValue::Keyword(Keyword::Raise))]
         token: Token,
         value: ExpressionNode,
-        #[prefix(token(Keyword(Keyword::From)))]
+        #[prefix(token(TokenValue::Keyword(Keyword::From)))]
         from: Option<ExpressionNode>
     },
-    ReRaise(#[token(Keyword(Keyword::Raise))] Token),
+    ReRaise(#[token(TokenValue::Keyword(Keyword::Raise))] Token),
 }
 
 #[node]
-pub struct PassStmtNode(#[token(Keyword(Keyword::Pass))] pub Token);
+pub struct PassStmtNode(#[token(TokenValue::Keyword(Keyword::Pass))] pub Token);
 #[node]
-pub struct BreakStmtNode(pub Token);
+pub struct BreakStmtNode(#[token(TokenValue::Keyword(Keyword::Break))] pub Token);
 #[node]
-pub struct ContinueStmtNode(pub Token);
+pub struct ContinueStmtNode(#[token(TokenValue::Keyword(Keyword::Continue))] pub Token);
 
 // 'global' ','.NAME+
 #[node]
 pub struct GlobalStmtNode {
+    #[token(TokenValue::Keyword(Keyword::Global))]
     pub token: Token,
+    #[one_or_more]
+    #[sep(TokenValue::Symbol(Symbol::Comma))]
+    #[token(TokenValue::Word(_))]
     pub names: Vec<Token>,
 }
 
 // 'nonlocal' ','.NAME+
 #[node]
 pub struct NonlocalStmtNode {
+    #[token(TokenValue::Keyword(Keyword::Nonlocal))]
     pub token: Token,
+    #[one_or_more]
+    #[sep(TokenValue::Symbol(Symbol::Comma))]
+    #[token(TokenValue::Word(_))]
     pub names: Vec<Token>,
 }
 
 #[node]
 pub struct DelStmtNode {
+    #[token(TokenValue::Keyword(Keyword::Del))]
     pub token: Token,
     pub targets: DelTargetsNode,
 }
@@ -160,6 +175,7 @@ pub struct YieldStmtNode(pub YieldExprNode);
 
 #[node]
 pub struct AssertStmtNode {
+    #[token(TokenValue::Keyword(Keyword::Assert))]
     pub token: Token,
     pub expr: ExpressionNode,
     pub error: Option<ExpressionNode>,
@@ -831,7 +847,7 @@ pub enum CompareOpBitwiseOrPair {
     Is(Box<BitwiseOrNode>),
 }
 
-#[node]
+#[node] // TODO: implement manually probably
 pub enum BitwiseOrNode {
     Or(Box<BitwiseOrNode>, BitwiseXorNode),
     Xor(BitwiseXorNode)
@@ -1051,7 +1067,10 @@ pub struct StringsNode(pub Token);
 #[node]
 pub struct ListNode(pub Option<StarNamedExpressionsNode>);
 #[node]
-pub struct TupleNode(pub Option<(Box<StarNamedExpressionNode>, Option<StarNamedExpressionsNode>)>);
+pub struct TupleNode(pub Option<TupleNodeInner>);
+#[node]
+pub struct TupleNodeInner(pub Box<StarNamedExpressionNode>, pub Option<StarNamedExpressionsNode>);
+
 #[node]
 pub struct SetNode(pub StarNamedExpressionsNode);
 
@@ -1085,8 +1104,11 @@ pub struct ForIfClauseNode {
     pub targets: StarTargetsNode,
     pub in_token: Token,
     pub iter: DisjunctionNode,
-    pub guards: Vec<(Token, DisjunctionNode)>,
+    pub guards: Vec<ForIfClauseNodeGuardsInner>,
 }
+
+#[node]
+pub struct ForIfClauseNodeGuardsInner(pub Token, pub DisjunctionNode);
 
 #[node]
 pub struct ListCompNode {
@@ -1198,13 +1220,13 @@ pub enum SingleSubscriptAttributeTargetNode {
     Slices(TPrimaryNode, SlicesNode), // !t_lookahead
 }
 
-#[node]
+#[node] // TODO: maybe implement manually...
 pub enum TPrimaryNode {
+    Atom(Box<AtomNode>), // &t_lookahead
     Named(Box<Self>, Token), // '.' NAME &t_lookahead
     Slices(Box<Self>, SliceNode), // '[' slices ']' &t_lookahead
-    Genexp(Box<Self>, GenexpNode), // &t_lookahead
     Call(Box<Self>, Option<ArgumentsNode>), // &t_lookahead
-    Atom(Box<AtomNode>), // &t_lookahead
+    Genexp(Box<Self>, GenexpNode), // &t_lookahead
 }
 
 // t_lookahead: '(' | '[' | '.'

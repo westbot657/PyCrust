@@ -57,6 +57,7 @@ pub enum Keyword {
     Pass,
     Lambda,
     Del,
+    Assert,
 }
 
 impl Keyword {
@@ -91,6 +92,7 @@ impl Keyword {
             "pass" => Self::Pass,
             "lambda" => Self::Lambda,
             "del" => Self::Del,
+            "assert" => Self::Assert,
             _ => return None,
         })
     }
@@ -572,5 +574,8 @@ impl ParseTokens {
         }
     }
     
+    pub fn is_empty(&self) -> bool {
+        self.tokens.len() - self.offset == 0
+    }
+    
 }
-

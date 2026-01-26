@@ -1,5 +1,4 @@
 use proc_macro::TokenStream;
-use std::any::Any;
 use proc_macro2::Span;
 use quote::{quote, ToTokens, TokenStreamExt};
 use syn::{parse_macro_input, Data, DeriveInput, Fields, Token, parenthesized, Type};
@@ -36,24 +35,21 @@ enum FieldName {
 enum VariantMetadata {
     Tuple {
         name: syn::Ident,
-        fields: Vec<FieldMetadata>, // Unnamed fields
+        fields: Vec<FieldMetadata>,
     },
     Struct {
         name: syn::Ident,
-        fields: Vec<FieldMetadata>, // Named fields, treated as inline #[Node] struct
+        fields: Vec<FieldMetadata>,
     },
 }
 
 #[derive(Debug, Default)]
 struct FieldAttrs {
     skip: bool,
-    token: Option<TokenValue>,
+    token: Option<syn::Expr>,
     sep: Option<SepAttr>,
     one_or_more: bool,
     commit: bool,
-    eager: bool,
-    fail_if: Option<TokenValue>,
-    pass_if: Option<TokenValue>,
     prefix: Vec<TokenCheck>,
     postfix: Vec<TokenCheck>,
     pattern: Vec<TokenCheck>,
@@ -61,36 +57,15 @@ struct FieldAttrs {
 
 #[derive(Debug, Clone)]
 enum TokenCheck {
-    Token(TokenValue),
-    PassIf(TokenValue),
-    FailIf(TokenValue),
+    Token(syn::Expr),
+    PassIf(syn::Expr),
+    FailIf(syn::Expr),
 }
 
 #[derive(Debug)]
 struct SepAttr {
-    token: TokenValue,
+    token: syn::Expr,
     trailing: bool,
-}
-
-#[derive(Debug, Clone)]
-struct TokenValue {
-    variant: syn::Path,
-    inner: Option<syn::Path>,
-}
-
-impl Parse for TokenValue {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let variant: syn::Path = input.parse()?;
-        let inner = if input.peek(syn::token::Paren) {
-            let content;
-            parenthesized!(content in input);
-            Some(content.parse()?)
-        } else {
-            None
-        };
-
-        Ok(TokenValue { variant, inner })
-    }
 }
 
 fn generic_arg_as_type(arg: &syn::GenericArgument) -> Option<&syn::Type> {
@@ -99,6 +74,7 @@ fn generic_arg_as_type(arg: &syn::GenericArgument) -> Option<&syn::Type> {
         _ => None,
     }
 }
+
 fn is_of_type(ty: &Type, name: &str) -> bool {
     matches!(
         ty,
@@ -108,9 +84,88 @@ fn is_of_type(ty: &Type, name: &str) -> bool {
     )
 }
 
+fn type_to_string(ty: &Type) -> String {
+    quote!(#ty).to_string()
+}
+
+impl TokenCheck {
+    fn generate_impl(&self, hard_fail: bool) -> proc_macro2::TokenStream {
+        match self {
+            TokenCheck::Token(pattern) => {
+                if hard_fail {
+                    quote! {
+                        let Some(tok) = tokens.get(0) else {
+                            return Err(anyhow!("Unexpected EOF"));
+                        };
+                        if matches!(&tok.value, #pattern) {
+                            tokens.consume_next();
+                        } else {
+                            return Err(anyhow!("Expected token matching {}, but got {:?}", stringify!(#pattern), tok.value));
+                        }
+                    }
+                } else {
+                    quote! {
+                        let Some(tok) = tokens.get(0) else {
+                            return Ok(None);
+                        };
+                        if matches!(&tok.value, #pattern) {
+                            tokens.consume_next();
+                        } else {
+                            return Ok(None);
+                        }
+                    }
+                }
+            }
+            TokenCheck::PassIf(pattern) => {
+                quote! {
+                    let Some(tok) = tokens.get(0) else {
+                        return Ok(None);
+                    };
+                    if !matches!(&tok.value, #pattern) {
+                        return Ok(None);
+                    }
+                }
+            }
+            TokenCheck::FailIf(pattern) => {
+                quote! {
+                    if let Some(tok) = tokens.get(0) {
+                        if matches!(&tok.value, #pattern) {
+                            return Ok(None);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 impl FieldMetadata {
+    fn is_storable(&self) -> bool {
+        !matches!(self.ty, Type::Tuple(_)) && !is_of_type(&self.ty, "bool")
+    }
+
     fn generate_impl(&self) -> proc_macro2::TokenStream {
         let ty = &self.ty;
+        let commit = self.attrs.commit;
+
+        // Generate prefix checks
+        let mut prefix_code = proc_macro2::TokenStream::new();
+        for check in &self.attrs.prefix {
+            prefix_code.append_all(check.generate_impl(commit));
+        }
+
+        // Generate postfix checks
+        let mut postfix_code = proc_macro2::TokenStream::new();
+        for check in &self.attrs.postfix {
+            postfix_code.append_all(check.generate_impl(commit));
+        }
+
+        // Generate pattern checks
+        let mut pattern_code = proc_macro2::TokenStream::new();
+        for check in &self.attrs.pattern {
+            pattern_code.append_all(check.generate_impl(commit));
+        }
+
         if let Type::Path(type_path) = ty {
             let seg = type_path.path.segments.last().unwrap();
 
@@ -118,77 +173,474 @@ impl FieldMetadata {
                 "Vec" => {
                     if let syn::PathArguments::AngleBracketed(ref args) = seg.arguments {
                         let inner_ty = args.args.first().unwrap();
-                        let Some(name) = generic_arg_as_type(inner_ty) else {
-                            return quote!(compile_error("what"))
+                        let Some(inner_type) = generic_arg_as_type(inner_ty) else {
+                            return quote!(compile_error!("Vec must have a type argument"));
                         };
-                        if is_of_type(name, "Token") {
-                            quote! {
-                                todo!("Vec<Token> blah"); Ok(None)
-                            }
+
+                        if is_of_type(inner_type, "Token") {
+                            // Vec<Token>
+                            self.generate_vec_token()
                         } else {
-                            quote! {
-                                todo!("Vec<{:#?}> branch", stringify!(#name)); Ok(None)
-                            }
+                            // Vec<N> where N: Node
+                            self.generate_vec_node(inner_type)
                         }
                     } else {
-                        quote! { todo!("Vec with no generic?"); Ok(None) }
+                        quote! { compile_error!("Vec must have type arguments"); }
                     }
                 }
                 "Option" => {
                     if let syn::PathArguments::AngleBracketed(ref args) = seg.arguments {
                         let inner_ty = args.args.first().unwrap();
-                        let Some(name) = generic_arg_as_type(inner_ty) else {
-                            return quote!(compile_error("what"))
+                        let Some(inner_type) = generic_arg_as_type(inner_ty) else {
+                            return quote!(compile_error!("Option must have a type argument"));
                         };
-                        if is_of_type(name, "Token") {
-                            quote! {
-                                todo!("Option<Token> blah"); Ok(None)
-                            }
+
+                        if is_of_type(inner_type, "Token") {
+                            // Option<Token>
+                            self.generate_option_token()
                         } else {
+                            // Option<N> where N: Node
                             quote! {
-                                todo!("Option<{:#?}> branch", stringify!(#name)); Ok(None)
+                                #prefix_code
+                                let result = #inner_type::parse(tokens)?;
+                                #postfix_code
+                                Ok(Some(result))
                             }
                         }
                     } else {
-                        quote! { todo!("Option with no generic?"); Ok(None) }
+                        quote! { compile_error!("Option must have type arguments"); }
                     }
                 }
                 "Box" => {
                     if let syn::PathArguments::AngleBracketed(ref args) = seg.arguments {
                         let inner_ty = args.args.first().unwrap();
-                        let Some(name) = generic_arg_as_type(inner_ty) else {
-                            return quote!(compile_error("what"))
+                        let Some(inner_type) = generic_arg_as_type(inner_ty) else {
+                            return quote!(compile_error!("Box must have a type argument"));
                         };
+
+                        let fail_code = if commit {
+                            let msg = format!("Failed to parse {}", type_to_string(inner_type));
+                            quote! { Err(anyhow!(#msg)) }
+                        } else {
+                            quote! { Ok(None) }
+                        };
+
                         quote! {
-                            todo!("Box<{:#?}> branch", stringify!(#inner_ty)); Ok(None)
+                            #prefix_code
+                            let result = if let Some(node) = #inner_type::parse(tokens)? {
+                                Ok(Some(Box::new(node)))
+                            } else {
+                                #fail_code
+                            };
+                            #postfix_code
+                            result
                         }
                     } else {
-                        quote! { todo!("Box with no generic?"); Ok(None) }
+                        quote! { compile_error!("Box must have type arguments"); }
                     }
                 }
-                "()" => {
-                    quote! { todo!("() unit branch"); Ok(None) }
-                }
                 "Token" => {
-                    quote! { todo!("Token branch"); Ok(None) }
+                    // Token
+                    self.generate_token()
                 }
                 "bool" => {
-                    quote! { todo!("bool branch"); Ok(None) }
+                    // bool
+                    self.generate_bool()
                 }
-                other => {
-                    quote! { todo!("Node type branch: {}", #other); Ok(None) }
+                _ => {
+                    // N where N: Node
+                    quote! {
+                        #prefix_code
+                        let result = #seg::parse(tokens);
+                        #postfix_code
+                        result
+                    }
+                }
+            }
+        } else if let Type::Tuple(tuple_ty) = ty {
+            // Unit type ()
+            if tuple_ty.elems.is_empty() {
+                self.generate_unit()
+            } else {
+                quote! { compile_error!("Only unit tuples () are supported"); }
+            }
+        } else {
+            let s = format!("Unsupported type: {:?}", ty);
+            quote! { compile_error!(#s); }
+        }
+    }
+
+    fn generate_token(&self) -> proc_macro2::TokenStream {
+        let commit = self.attrs.commit;
+
+        if let Some(ref pattern) = self.attrs.token {
+            let error_msg = format!("Expected token matching {}", quote!(#pattern));
+
+            if commit {
+                quote! {
+                    let Some(tok) = tokens.get(0) else {
+                        return Err(anyhow!("Unexpected EOF"));
+                    };
+                    if matches!(&tok.value, #pattern) {
+                        let token = tokens.consume_next().unwrap().clone();
+                        Ok(Some(token))
+                    } else {
+                        return Err(anyhow!(#error_msg));
+                    }
+                }
+            } else {
+                quote! {
+                    let Some(tok) = tokens.get(0) else {
+                        return Ok(None);
+                    };
+                    if matches!(&tok.value, #pattern) {
+                        let token = tokens.consume_next().unwrap().clone();
+                        Ok(Some(token))
+                    } else {
+                        return Ok(None);
+                    }
                 }
             }
         } else {
-            quote! { todo!("Other type: {:#?}", #ty); Ok(None) }
+            quote! { compile_error!("Token field must have #[token(...)] attribute"); }
+        }
+    }
+
+    fn generate_option_token(&self) -> proc_macro2::TokenStream {
+        if let Some(ref pattern) = self.attrs.token {
+            quote! {
+                let result = if let Some(tok) = tokens.get(0) {
+                    if matches!(&tok.value, #pattern) {
+                        Some(tokens.consume_next().unwrap().clone())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                Ok(Some(result))
+            }
+        } else {
+            quote! { compile_error!("Option<Token> field must have #[token(...)] attribute"); }
+        }
+    }
+
+    fn generate_vec_token(&self) -> proc_macro2::TokenStream {
+        let one_or_more = self.attrs.one_or_more;
+        let commit = self.attrs.commit;
+
+        if let Some(ref pattern) = self.attrs.token {
+            let mut pattern_code = proc_macro2::TokenStream::new();
+            for check in &self.attrs.pattern {
+                pattern_code.append_all(check.generate_impl(commit));
+            }
+
+            if let Some(ref sep) = self.attrs.sep {
+                let sep_pattern = &sep.token;
+                let trailing = sep.trailing;
+
+                quote! {
+                    let mut items = Vec::new();
+
+                    #pattern_code
+
+                    // Try to parse first element
+                    if let Some(tok) = tokens.get(0) {
+                        if matches!(&tok.value, #pattern) {
+                            items.push(tokens.consume_next().unwrap().clone());
+                        } else {
+                            return Ok(None);
+                        }
+                    } else {
+                        return Ok(None);
+                    }
+
+                    // Parse remaining elements with separator
+                    loop {
+                        // Check for separator
+                        if let Some(tok) = tokens.get(0) {
+                            if matches!(&tok.value, #sep_pattern) {
+                                tokens.consume_next();
+
+                                // Try to parse next element
+                                if let Some(tok) = tokens.get(0) {
+                                    if matches!(&tok.value, #pattern) {
+                                        items.push(tokens.consume_next().unwrap().clone());
+                                        continue;
+                                    }
+                                }
+
+                                // We consumed separator but no element follows
+                                if #trailing {
+                                    // Trailing separator is allowed
+                                    break;
+                                } else {
+                                    // Trailing separator not allowed, this is an error
+                                    return Err(anyhow!("Unexpected trailing separator"));
+                                }
+                            } else {
+                                // No separator, we're done
+                                break;
+                            }
+                        } else {
+                            // EOF, we're done
+                            break;
+                        }
+                    }
+
+                    if #one_or_more && items.is_empty() {
+                        return Err(anyhow!("Expected at least one element"));
+                    }
+
+                    Ok(Some(items))
+                }
+            } else {
+                // No separator, just collect matching tokens
+                quote! {
+                    let mut items = Vec::new();
+
+                    #pattern_code
+
+                    loop {
+                        if let Some(tok) = tokens.get(0) {
+                            if matches!(&tok.value, #pattern) {
+                                items.push(tokens.consume_next().unwrap().clone());
+                            } else {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+
+                    if #one_or_more && items.is_empty() {
+                        return Err(anyhow!("Expected at least one element"));
+                    }
+
+                    Ok(Some(items))
+                }
+            }
+        } else if !self.attrs.pattern.is_empty() {
+            // Using pattern instead of token
+            let mut pattern_code = proc_macro2::TokenStream::new();
+            for check in &self.attrs.pattern {
+                pattern_code.append_all(check.generate_impl(commit));
+            }
+
+            if let Some(ref sep) = self.attrs.sep {
+                let sep_pattern = &sep.token;
+                let trailing = sep.trailing;
+
+                quote! {
+                    let mut items = Vec::new();
+
+                    // Try to parse first element using pattern
+                    loop {
+                        tokens.snapshot();
+                        let matched = if { #pattern_code true }.is_ok() {
+                            tokens.discard_snapshot();
+                            true
+                        } else {
+                            tokens.restore();
+                            false
+                        };
+
+                        if !matched {
+                            break;
+                        }
+
+                        items.push(Token::default()); // Placeholder since we consumed via pattern
+
+                        // Check for separator
+                        if let Some(tok) = tokens.get(0) {
+                            if matches!(&tok.value, #sep_pattern) {
+                                tokens.consume_next();
+                                continue;
+                            } else {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+
+                    if #one_or_more && items.is_empty() {
+                        return Err(anyhow!("Expected at least one element"));
+                    }
+
+                    Ok(Some(items))
+                }
+            } else {
+                quote! {
+                    compile_error!("Vec<Token> with pattern but no separator - behavior unclear");
+                }
+            }
+        } else {
+            quote! { compile_error!("Vec<Token> field must have #[token(...)] or #[pattern(...)] attribute"); }
+        }
+    }
+
+    fn generate_vec_node(&self, inner_type: &Type) -> proc_macro2::TokenStream {
+        let one_or_more = self.attrs.one_or_more;
+        let commit = self.attrs.commit;
+
+        if let Some(ref sep) = self.attrs.sep {
+            let sep_pattern = &sep.token;
+            let trailing = sep.trailing;
+
+            quote! {
+                {
+                    let mut items = Vec::new();
+
+                    // Try to parse first element
+                    if let Some(node) = #inner_type::parse(tokens)? {
+                        items.push(node);
+
+                        // Parse remaining elements with separator
+                        loop {
+                            // Check for separator
+                            let has_separator = if let Some(tok) = tokens.get(0) {
+                                matches!(&tok.value, #sep_pattern)
+                            } else {
+                                false
+                            };
+
+                            if has_separator {
+                                tokens.consume_next();
+
+                                // Try to parse next element
+                                if let Some(node) = #inner_type::parse(tokens)? {
+                                    items.push(node);
+                                    continue;
+                                } else {
+                                    // We consumed separator but no element follows
+                                    if #trailing {
+                                        // Trailing separator is allowed
+                                        break;
+                                    } else {
+                                        // Trailing separator not allowed, this is an error
+                                        return Err(anyhow!("Expected element after separator"));
+                                    }
+                                }
+                            } else {
+                                // No separator, we're done
+                                break;
+                            }
+                        }
+                    } else {
+                        // No first element found
+                        if #one_or_more {
+                            return Err(anyhow!("Expected at least one element"));
+                        }
+                        // If one_or_more is false and we got nothing, items is empty which is fine
+                    }
+
+                    Ok(Some(items))
+                }
+            }
+        } else {
+            // No separator, just collect nodes
+            quote! {
+                {
+                    let mut items = Vec::new();
+
+                    loop {
+                        if let Some(node) = #inner_type::parse(tokens)? {
+                            items.push(node);
+                        } else {
+                            break;
+                        }
+                    }
+
+                    if #one_or_more && items.is_empty() {
+                        return Err(anyhow!("Expected at least one element"));
+                    }
+
+                    Ok(Some(items))
+                }
+            }
+        }
+    }
+
+    fn generate_bool(&self) -> proc_macro2::TokenStream {
+        if let Some(ref pattern) = self.attrs.token {
+            quote! {
+                let result = if let Some(tok) = tokens.get(0) {
+                    if matches!(&tok.value, #pattern) {
+                        tokens.consume_next();
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                Ok(Some(result))
+            }
+        } else if !self.attrs.pattern.is_empty() {
+            let commit = self.attrs.commit;
+            let mut pattern_code = proc_macro2::TokenStream::new();
+            for check in &self.attrs.pattern {
+                pattern_code.append_all(check.generate_impl(commit));
+            }
+
+            quote! {
+                tokens.snapshot();
+                let result = if { #pattern_code true }.is_ok() {
+                    tokens.discard_snapshot();
+                    true
+                } else {
+                    tokens.restore();
+                    false
+                };
+                Ok(Some(result))
+            }
+        } else {
+            quote! { compile_error!("bool field must have #[token(...)] or #[pattern(...)] attribute"); }
+        }
+    }
+
+    fn generate_unit(&self) -> proc_macro2::TokenStream {
+        let commit = self.attrs.commit;
+
+        // Check if we have any prefix checks (which include pass_if/fail_if)
+        if !self.attrs.prefix.is_empty() {
+            let mut code = proc_macro2::TokenStream::new();
+            for check in &self.attrs.prefix {
+                code.append_all(check.generate_impl(commit));
+            }
+            quote! {
+                #code
+                Ok(Some(()))
+            }
+        } else if let Some(ref pattern) = self.attrs.token {
+            let check = TokenCheck::Token(pattern.clone());
+            let code = check.generate_impl(commit);
+            quote! {
+                #code
+                Ok(Some(()))
+            }
+        } else if !self.attrs.pattern.is_empty() {
+            let mut pattern_code = proc_macro2::TokenStream::new();
+            for check in &self.attrs.pattern {
+                pattern_code.append_all(check.generate_impl(commit));
+            }
+            quote! {
+                #pattern_code
+                Ok(Some(()))
+            }
+        } else {
+            quote! { compile_error!("Unit type () field must have #[token(...)], #[pattern(...)], #[prefix(...)] with pass_if/fail_if/token, or direct #[pass_if(...)]/#[fail_if(...)] attribute"); }
         }
     }
 }
 
 impl NodeMetadata {
-
     fn struct_impl(fields: &Vec<FieldMetadata>, is_tuple: bool) -> proc_macro2::TokenStream {
-        let names = fields
+        // Separate storable and non-storable fields
+        let storable_fields: Vec<_> = fields.iter().filter(|f| f.is_storable()).collect();
+
+        let names = storable_fields
             .iter()
             .map(|f| {
                 let x = match &f.name {
@@ -207,21 +659,27 @@ impl NodeMetadata {
                 FieldName::Indexed(x) => proc_macro2::Ident::new(&format!("parsed_{x}"), Span::call_site()),
             };
             let f_impl = field.generate_impl();
-            setup.append_all(quote! {
-                let Some(#f_name) = { #f_impl }? else { return Ok(None) };
-            })
+
+            if field.is_storable() {
+                setup.append_all(quote! {
+                    let Some(#f_name) = { #f_impl }? else { return Ok(None); };
+                });
+            } else {
+                // For unit and bool types, we still need to run the parse but don't store
+                setup.append_all(quote! {
+                    let Some(_) = { #f_impl }? else { return Ok(None); };
+                });
+            }
         }
 
         if is_tuple {
             quote! {
                 #setup
-
                 Ok(Some(Self(#names)))
             }
         } else {
             quote! {
                 #setup
-
                 Ok(Some(Self { #names }))
             }
         }
@@ -231,16 +689,16 @@ impl NodeMetadata {
         let mut body = proc_macro2::TokenStream::new();
 
         for (i, variant) in variants.iter().enumerate() {
-
             let variant_impl = match variant {
-                VariantMetadata::Struct {name, fields} => {
+                VariantMetadata::Struct { name, fields } => {
+                    let storable_fields: Vec<_> = fields.iter().filter(|f| f.is_storable()).collect();
 
-                    let names = fields
+                    let names = storable_fields
                         .iter()
                         .map(|f| {
                             let x = match &f.name {
                                 FieldName::Named(n) => n.clone(),
-                                _ => unreachable!()
+                                _ => unreachable!(),
                             };
                             quote! { #x, }
                         })
@@ -253,27 +711,34 @@ impl NodeMetadata {
                             unreachable!()
                         };
                         let f_impl = field.generate_impl();
-                        setup.append_all(quote! {
-                            let Some(#f_name) = { #f_impl }? else { return Ok(None) };
-                        })
+
+                        if field.is_storable() {
+                            setup.append_all(quote! {
+                                let Some(#f_name) = { #f_impl }? else { return Ok(None); };
+                            });
+                        } else {
+                            setup.append_all(quote! {
+                                let Some(_) = { #f_impl }? else { return Ok(None); };
+                            });
+                        }
                     }
 
                     quote! {
                         #setup
-
                         Ok(Some(Self::#name { #names }))
                     }
                 }
-                VariantMetadata::Tuple {name, fields} => {
+                VariantMetadata::Tuple { name, fields } => {
+                    let storable_fields: Vec<_> = fields.iter().filter(|f| f.is_storable()).collect();
 
-                    let names = fields
+                    let names = storable_fields
                         .iter()
                         .map(|f| {
                             let x = match &f.name {
                                 FieldName::Indexed(x) => proc_macro2::Ident::new(&format!("parsed_{x}"), Span::call_site()),
-                                _ => unreachable!()
+                                _ => unreachable!(),
                             };
-                            quote! { #x , }
+                            quote! { #x, }
                         })
                         .collect::<proc_macro2::TokenStream>();
 
@@ -286,14 +751,20 @@ impl NodeMetadata {
                         let name = format!("parsed_{x}");
                         let name = proc_macro2::Ident::new(&name, Span::call_site());
                         let f_impl = field.generate_impl();
-                        setup.append_all(quote! {
-                            let Some(#name) = { #f_impl }? else { return Ok(None) };
-                        })
+
+                        if field.is_storable() {
+                            setup.append_all(quote! {
+                                let Some(#name) = { #f_impl }? else { return Ok(None); };
+                            });
+                        } else {
+                            setup.append_all(quote! {
+                                let Some(_) = { #f_impl }? else { return Ok(None); };
+                            });
+                        }
                     }
 
                     quote! {
                         #setup
-
                         Ok(Some(Self::#name(#names)))
                     }
                 }
@@ -305,10 +776,10 @@ impl NodeMetadata {
                 }
             });
 
-            if i < variants.len()-1 {
-                body.append_all(quote! { else })
+            if i < variants.len() - 1 {
+                body.append_all(quote! { else });
             } else {
-                body.append_all(quote! { else { Ok(None) } })
+                body.append_all(quote! { else { Ok(None) } });
             }
         }
 
@@ -316,17 +787,10 @@ impl NodeMetadata {
     }
 
     fn get_parse_impl(&self) -> proc_macro2::TokenStream {
-
         match &self.kind {
-            NodeKind::Struct(fields) => {
-                Self::struct_impl(fields, false)
-            }
-            NodeKind::TupleStruct(fields) => {
-                Self::struct_impl(fields, true)
-            }
-            NodeKind::Enum(variants) => {
-                Self::enum_impl(variants)
-            }
+            NodeKind::Struct(fields) => Self::struct_impl(fields, false),
+            NodeKind::TupleStruct(fields) => Self::struct_impl(fields, true),
+            NodeKind::Enum(variants) => Self::enum_impl(variants),
         }
     }
 }
@@ -350,7 +814,7 @@ pub fn node(_attr: TokenStream, item: TokenStream) -> TokenStream {
         #cleaned_input
 
         impl Node for #struct_name {
-            fn parse(tokens: &mut Tokens) -> anyhow::Result<Option<Self>> {
+            fn parse(tokens: &mut ParseTokens) -> Result<Option<Self>> {
                 #imp
             }
         }
@@ -363,48 +827,55 @@ fn parse_node_metadata(input: &DeriveInput) -> syn::Result<NodeMetadata> {
     let name = input.ident.clone();
 
     let kind = match &input.data {
-        Data::Struct(data_struct) => {
-            match &data_struct.fields {
-                Fields::Named(fields) => {
-                    let field_metas = fields.named.iter()
-                        .filter_map(|f| {
-                            if is_skip_field(&f.attrs) {
-                                None
-                            } else {
-                                Some(parse_field_metadata(
-                                    FieldName::Named(f.ident.clone().unwrap()),
-                                    &f.ty,
-                                    &f.attrs
-                                ))
-                            }
-                        })
-                        .collect::<syn::Result<Vec<_>>>()?;
-                    NodeKind::Struct(field_metas)
-                }
-                Fields::Unnamed(fields) => {
-                    let field_metas = fields.unnamed.iter()
-                        .enumerate()
-                        .filter_map(|(idx, f)| {
-                            if is_skip_field(&f.attrs) {
-                                None
-                            } else {
-                                Some(parse_field_metadata(
-                                    FieldName::Indexed(idx),
-                                    &f.ty,
-                                    &f.attrs
-                                ))
-                            }
-                        })
-                        .collect::<syn::Result<Vec<_>>>()?;
-                    NodeKind::TupleStruct(field_metas)
-                }
-                Fields::Unit => {
-                    return Err(syn::Error::new_spanned(input, "Unit structs are not supported"));
-                }
+        Data::Struct(data_struct) => match &data_struct.fields {
+            Fields::Named(fields) => {
+                let field_metas = fields
+                    .named
+                    .iter()
+                    .filter_map(|f| {
+                        if is_skip_field(&f.attrs) {
+                            None
+                        } else {
+                            Some(parse_field_metadata(
+                                FieldName::Named(f.ident.clone().unwrap()),
+                                &f.ty,
+                                &f.attrs,
+                            ))
+                        }
+                    })
+                    .collect::<syn::Result<Vec<_>>>()?;
+                NodeKind::Struct(field_metas)
             }
-        }
+            Fields::Unnamed(fields) => {
+                let field_metas = fields
+                    .unnamed
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, f)| {
+                        if is_skip_field(&f.attrs) {
+                            None
+                        } else {
+                            Some(parse_field_metadata(
+                                FieldName::Indexed(idx),
+                                &f.ty,
+                                &f.attrs,
+                            ))
+                        }
+                    })
+                    .collect::<syn::Result<Vec<_>>>()?;
+                NodeKind::TupleStruct(field_metas)
+            }
+            Fields::Unit => {
+                return Err(syn::Error::new_spanned(
+                    input,
+                    "Unit structs are not supported",
+                ));
+            }
+        },
         Data::Enum(data_enum) => {
-            let variants = data_enum.variants.iter()
+            let variants = data_enum
+                .variants
+                .iter()
                 .map(parse_variant_metadata)
                 .collect::<syn::Result<Vec<_>>>()?;
             NodeKind::Enum(variants)
@@ -422,7 +893,9 @@ fn parse_variant_metadata(variant: &syn::Variant) -> syn::Result<VariantMetadata
 
     match &variant.fields {
         Fields::Named(fields) => {
-            let field_metas = fields.named.iter()
+            let field_metas = fields
+                .named
+                .iter()
                 .filter_map(|f| {
                     if is_skip_field(&f.attrs) {
                         None
@@ -430,7 +903,7 @@ fn parse_variant_metadata(variant: &syn::Variant) -> syn::Result<VariantMetadata
                         Some(parse_field_metadata(
                             FieldName::Named(f.ident.clone().unwrap()),
                             &f.ty,
-                            &f.attrs
+                            &f.attrs,
                         ))
                     }
                 })
@@ -442,7 +915,9 @@ fn parse_variant_metadata(variant: &syn::Variant) -> syn::Result<VariantMetadata
             })
         }
         Fields::Unnamed(fields) => {
-            let field_metas = fields.unnamed.iter()
+            let field_metas = fields
+                .unnamed
+                .iter()
                 .enumerate()
                 .filter_map(|(idx, f)| {
                     if is_skip_field(&f.attrs) {
@@ -451,7 +926,7 @@ fn parse_variant_metadata(variant: &syn::Variant) -> syn::Result<VariantMetadata
                         Some(parse_field_metadata(
                             FieldName::Indexed(idx),
                             &f.ty,
-                            &f.attrs
+                            &f.attrs,
                         ))
                     }
                 })
@@ -462,12 +937,10 @@ fn parse_variant_metadata(variant: &syn::Variant) -> syn::Result<VariantMetadata
                 fields: field_metas,
             })
         }
-        Fields::Unit => {
-            Err(syn::Error::new_spanned(
-                variant,
-                "Unit variants are not supported"
-            ))
-        }
+        Fields::Unit => Err(syn::Error::new_spanned(
+            variant,
+            "Unit variants are not supported",
+        )),
     }
 }
 
@@ -487,19 +960,17 @@ fn parse_field_metadata(
             field_attrs.skip = true;
         } else if attr.path().is_ident("one_or_more") {
             field_attrs.one_or_more = true;
-        } else if attr.path().is_ident("commit") {
+        } else if attr.path().is_ident("commit") || attr.path().is_ident("eager") {
             field_attrs.commit = true;
-        } else if attr.path().is_ident("eager") {
-            field_attrs.eager = true;
         } else if attr.path().is_ident("token") {
-            let token_val: TokenValue = attr.parse_args()?;
-            field_attrs.token = Some(token_val);
-        } else if attr.path().is_ident("fail_if") {
-            let token_val: TokenValue = attr.parse_args()?;
-            field_attrs.fail_if = Some(token_val);
+            let expr: syn::Expr = attr.parse_args()?;
+            field_attrs.token = Some(expr);
         } else if attr.path().is_ident("pass_if") {
-            let token_val: TokenValue = attr.parse_args()?;
-            field_attrs.pass_if = Some(token_val);
+            let expr: syn::Expr = attr.parse_args()?;
+            field_attrs.prefix.push(TokenCheck::PassIf(expr));
+        } else if attr.path().is_ident("fail_if") {
+            let expr: syn::Expr = attr.parse_args()?;
+            field_attrs.prefix.push(TokenCheck::FailIf(expr));
         } else if attr.path().is_ident("sep") {
             field_attrs.sep = Some(parse_sep_attr(attr)?);
         } else if attr.path().is_ident("prefix") {
@@ -520,7 +991,7 @@ fn parse_field_metadata(
 
 fn parse_sep_attr(attr: &syn::Attribute) -> syn::Result<SepAttr> {
     attr.parse_args_with(|input: ParseStream| {
-        let token: TokenValue = input.parse()?;
+        let token: syn::Expr = input.parse()?;
 
         let trailing = if input.peek(Token![,]) {
             input.parse::<Token![,]>()?;
@@ -558,46 +1029,46 @@ fn parse_token_check_list(attr: &syn::Attribute) -> syn::Result<Vec<TokenCheck>>
                     if !input.peek(syn::token::Paren) {
                         return Err(syn::Error::new_spanned(
                             ident,
-                            "expected 'token(...)' with parentheses"
+                            "expected 'token(...)' with parentheses",
                         ));
                     }
                     let content;
                     parenthesized!(content in input);
-                    let token_val: TokenValue = content.parse()?;
-                    checks.push(TokenCheck::Token(token_val));
+                    let expr: syn::Expr = content.parse()?;
+                    checks.push(TokenCheck::Token(expr));
                 } else if ident == "pass_if" {
                     if !input.peek(syn::token::Paren) {
                         return Err(syn::Error::new_spanned(
                             ident,
-                            "expected 'pass_if(...)' with parentheses"
+                            "expected 'pass_if(...)' with parentheses",
                         ));
                     }
                     let content;
                     parenthesized!(content in input);
-                    let token_val: TokenValue = content.parse()?;
-                    checks.push(TokenCheck::PassIf(token_val));
+                    let expr: syn::Expr = content.parse()?;
+                    checks.push(TokenCheck::PassIf(expr));
                 } else if ident == "fail_if" {
                     if !input.peek(syn::token::Paren) {
                         return Err(syn::Error::new_spanned(
                             ident,
-                            "expected 'fail_if(...)' with parentheses"
+                            "expected 'fail_if(...)' with parentheses",
                         ));
                     }
                     let content;
                     parenthesized!(content in input);
-                    let token_val: TokenValue = content.parse()?;
-                    checks.push(TokenCheck::FailIf(token_val));
+                    let expr: syn::Expr = content.parse()?;
+                    checks.push(TokenCheck::FailIf(expr));
                 } else {
-                    let msg = format!("unknown check type '{}', expected one of: token, pass_if, fail_if", ident);
-                    return Err(syn::Error::new_spanned(
-                        ident,
-                        msg
-                    ));
+                    let msg = format!(
+                        "unknown check type '{}', expected one of: token, pass_if, fail_if",
+                        ident
+                    );
+                    return Err(syn::Error::new_spanned(ident, msg));
                 }
             } else {
                 return Err(syn::Error::new(
                     input.span(),
-                    "expected 'token(...)', 'pass_if(...)', or 'fail_if(...)'"
+                    "expected 'token(...)', 'pass_if(...)', or 'fail_if(...)'",
                 ));
             }
 
@@ -614,33 +1085,87 @@ fn parse_token_check_list(attr: &syn::Attribute) -> syn::Result<Vec<TokenCheck>>
 
 fn strip_node_attrs(input: &mut DeriveInput) {
     match &mut input.data {
-        Data::Struct(data_struct) => {
-            match &mut data_struct.fields {
-                Fields::Named(fields) => {
-                    for field in fields.named.iter_mut() {
-                        strip_field_attrs(&mut field.attrs);
-                    }
-                }
-                Fields::Unnamed(fields) => {
-                    for field in fields.unnamed.iter_mut() {
-                        strip_field_attrs(&mut field.attrs);
-                    }
-                }
-                Fields::Unit => {}
+        Data::Struct(data_struct) => match &mut data_struct.fields {
+            Fields::Named(fields) => {
+                // Remove unit type and bool fields, and strip attrs from remaining
+                fields.named = fields
+                    .named
+                    .iter()
+                    .filter_map(|field| {
+                        let is_unit = matches!(field.ty, Type::Tuple(ref t) if t.elems.is_empty());
+                        let is_bool = is_of_type(&field.ty, "bool");
+
+                        if is_unit || is_bool {
+                            None
+                        } else {
+                            let mut field = field.clone();
+                            strip_field_attrs(&mut field.attrs);
+                            Some(field)
+                        }
+                    })
+                    .collect();
             }
-        }
+            Fields::Unnamed(fields) => {
+                // Remove unit type and bool fields, and strip attrs from remaining
+                fields.unnamed = fields
+                    .unnamed
+                    .iter()
+                    .filter_map(|field| {
+                        let is_unit = matches!(field.ty, Type::Tuple(ref t) if t.elems.is_empty());
+                        let is_bool = is_of_type(&field.ty, "bool");
+
+                        if is_unit || is_bool {
+                            None
+                        } else {
+                            let mut field = field.clone();
+                            strip_field_attrs(&mut field.attrs);
+                            Some(field)
+                        }
+                    })
+                    .collect();
+            }
+            Fields::Unit => {}
+        },
         Data::Enum(data_enum) => {
             for variant in data_enum.variants.iter_mut() {
                 match &mut variant.fields {
                     Fields::Named(fields) => {
-                        for field in fields.named.iter_mut() {
-                            strip_field_attrs(&mut field.attrs);
-                        }
+                        // Remove unit type and bool fields, and strip attrs from remaining
+                        fields.named = fields
+                            .named
+                            .iter()
+                            .filter_map(|field| {
+                                let is_unit = matches!(field.ty, Type::Tuple(ref t) if t.elems.is_empty());
+                                let is_bool = is_of_type(&field.ty, "bool");
+
+                                if is_unit || is_bool {
+                                    None
+                                } else {
+                                    let mut field = field.clone();
+                                    strip_field_attrs(&mut field.attrs);
+                                    Some(field)
+                                }
+                            })
+                            .collect();
                     }
                     Fields::Unnamed(fields) => {
-                        for field in fields.unnamed.iter_mut() {
-                            strip_field_attrs(&mut field.attrs);
-                        }
+                        // Remove unit type and bool fields, and strip attrs from remaining
+                        fields.unnamed = fields
+                            .unnamed
+                            .iter()
+                            .filter_map(|field| {
+                                let is_unit = matches!(field.ty, Type::Tuple(ref t) if t.elems.is_empty());
+                                let is_bool = is_of_type(&field.ty, "bool");
+
+                                if is_unit || is_bool {
+                                    None
+                                } else {
+                                    let mut field = field.clone();
+                                    strip_field_attrs(&mut field.attrs);
+                                    Some(field)
+                                }
+                            })
+                            .collect();
                     }
                     Fields::Unit => {}
                 }
@@ -658,8 +1183,8 @@ fn strip_field_attrs(attrs: &mut Vec<syn::Attribute>) {
             && !attr.path().is_ident("one_or_more")
             && !attr.path().is_ident("commit")
             && !attr.path().is_ident("eager")
-            && !attr.path().is_ident("fail_if")
             && !attr.path().is_ident("pass_if")
+            && !attr.path().is_ident("fail_if")
             && !attr.path().is_ident("prefix")
             && !attr.path().is_ident("postfix")
             && !attr.path().is_ident("pattern")
