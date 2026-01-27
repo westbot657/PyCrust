@@ -42,10 +42,44 @@ enum VariantMetadata {
     },
 }
 
+#[derive(Debug, Clone)]
+struct PatWithGuard {
+    pat: syn::Pat,
+    guard: Option<syn::Expr>,
+}
+
+impl Parse for PatWithGuard {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let pat = syn::Pat::parse_multi(input)?;
+
+        let guard = if input.peek(Token![if]) {
+            input.parse::<Token![if]>()?;
+            Some(input.parse::<syn::Expr>()?)
+        } else {
+            None
+        };
+
+        Ok(PatWithGuard {
+            pat,
+            guard,
+        })
+    }
+}
+
+impl ToTokens for PatWithGuard {
+    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+        self.pat.to_tokens(tokens);
+        if let Some(guard) = &self.guard {
+            tokens.append_all(quote!(if));
+            guard.to_tokens(tokens);
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct FieldAttrs {
     skip: bool,
-    token: Option<syn::Expr>,
+    token: Option<PatWithGuard>,
     sep: Option<SepAttr>,
     one_or_more: bool,
     commit: bool,
@@ -56,9 +90,9 @@ struct FieldAttrs {
 
 #[derive(Debug, Clone)]
 enum TokenCheck {
-    Token(syn::Expr),
-    PassIf(syn::Expr),
-    FailIf(syn::Expr),
+    Token(PatWithGuard),
+    PassIf(syn::Pat),
+    FailIf(syn::Pat),
 }
 
 #[derive(Debug)]
@@ -1057,13 +1091,14 @@ fn parse_field_metadata(
         } else if attr.path().is_ident("commit") || attr.path().is_ident("eager") {
             field_attrs.commit = true;
         } else if attr.path().is_ident("token") {
-            let expr: syn::Expr = attr.parse_args()?;
+            let expr: PatWithGuard = attr.parse_args()?;
+
             field_attrs.token = Some(expr);
         } else if attr.path().is_ident("pass_if") {
-            let expr: syn::Expr = attr.parse_args()?;
+            let expr: syn::Pat = attr.parse_args_with(syn::Pat::parse_multi)?;
             field_attrs.prefix.push(TokenCheck::PassIf(expr));
         } else if attr.path().is_ident("fail_if") {
-            let expr: syn::Expr = attr.parse_args()?;
+            let expr: syn::Pat = attr.parse_args_with(syn::Pat::parse_multi)?;
             field_attrs.prefix.push(TokenCheck::FailIf(expr));
         } else if attr.path().is_ident("sep") {
             field_attrs.sep = Some(parse_sep_attr(attr)?);
@@ -1128,7 +1163,9 @@ fn parse_token_check_list(attr: &syn::Attribute) -> syn::Result<Vec<TokenCheck>>
                     }
                     let content;
                     parenthesized!(content in input);
-                    let expr: syn::Expr = content.parse()?;
+                    let expr: PatWithGuard = content.parse()?;
+
+
                     checks.push(TokenCheck::Token(expr));
                 } else if ident == "pass_if" {
                     if !input.peek(syn::token::Paren) {
@@ -1139,7 +1176,7 @@ fn parse_token_check_list(attr: &syn::Attribute) -> syn::Result<Vec<TokenCheck>>
                     }
                     let content;
                     parenthesized!(content in input);
-                    let expr: syn::Expr = content.parse()?;
+                    let expr: syn::Pat = syn::Pat::parse_multi(&content)?;
                     checks.push(TokenCheck::PassIf(expr));
                 } else if ident == "fail_if" {
                     if !input.peek(syn::token::Paren) {
@@ -1150,7 +1187,7 @@ fn parse_token_check_list(attr: &syn::Attribute) -> syn::Result<Vec<TokenCheck>>
                     }
                     let content;
                     parenthesized!(content in input);
-                    let expr: syn::Expr = content.parse()?;
+                    let expr: syn::Pat = syn::Pat::parse_multi(&content)?;
                     checks.push(TokenCheck::FailIf(expr));
                 } else {
                     let msg = format!(
