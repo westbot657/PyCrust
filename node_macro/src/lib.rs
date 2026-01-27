@@ -4,6 +4,8 @@ use quote::{quote, ToTokens, TokenStreamExt};
 use syn::{parse_macro_input, Data, DeriveInput, Fields, Token, parenthesized, Type};
 use syn::parse::{Parse, ParseStream};
 
+static PARSE_NAME: &str = "parse_debug";
+
 #[derive(Debug)]
 struct NodeMetadata {
     name: syn::Ident,
@@ -189,11 +191,10 @@ impl TokenCheck {
                         let Some(tok) = tokens.get(0) else {
                             return Ok(None);
                         };
-                        if matches!(&tok.value, #pattern) {
-                            tokens.consume_next();
-                        } else {
+                        if !matches!(&tok.value, #pattern) {
                             return Ok(None);
                         }
+                        tokens.consume_next();
                     }
                 }
             }
@@ -246,6 +247,7 @@ impl FieldMetadata {
     }
 
     fn generate_impl(&self) -> proc_macro2::TokenStream {
+        let parse_n = syn::Ident::new(PARSE_NAME, Span::call_site());
         let ty = &self.ty;
         let commit = self.attrs.commit;
 
@@ -298,7 +300,7 @@ impl FieldMetadata {
                         } else {
                             quote! {
                                 #prefix_code
-                                let result = #inner_type::parse(tokens, invalid_pass)?;
+                                let result = #inner_type::#parse_n(tokens, invalid_pass)?;
                                 #postfix_code
                                 Ok(Some(result))
                             }
@@ -323,7 +325,7 @@ impl FieldMetadata {
 
                         quote! {
                             #prefix_code
-                            let result = if let Some(node) = #inner_type::parse(tokens, invalid_pass)? {
+                            let result = if let Some(node) = #inner_type::#parse_n(tokens, invalid_pass)? {
                                 Ok(Some(Box::new(node)))
                             } else {
                                 #fail_code
@@ -344,7 +346,7 @@ impl FieldMetadata {
                 _ => {
                     quote! {
                         #prefix_code
-                        let result = #seg::parse(tokens, invalid_pass);
+                        let result = #seg::#parse_n(tokens, invalid_pass);
                         #postfix_code
                         result
                     }
@@ -524,6 +526,7 @@ impl FieldMetadata {
     }
 
     fn generate_vec_node(&self, inner_type: &Type) -> proc_macro2::TokenStream {
+        let parse_n = syn::Ident::new(PARSE_NAME, Span::call_site());
         let one_or_more = self.attrs.one_or_more;
         let commit = self.attrs.commit;
 
@@ -546,7 +549,7 @@ impl FieldMetadata {
                     {
                         let mut items = Vec::new();
 
-                        if let Some(node) = #inner_type::parse(tokens, invalid_pass)? {
+                        if let Some(node) = #inner_type::#parse_n(tokens, invalid_pass)? {
                             items.push(node);
 
                             loop {
@@ -559,7 +562,7 @@ impl FieldMetadata {
                                 if has_separator {
                                     tokens.consume_next();
 
-                                    if let Some(node) = #inner_type::parse(tokens, invalid_pass)? {
+                                    if let Some(node) = #inner_type::#parse_n(tokens, invalid_pass)? {
                                         items.push(node);
                                         continue;
                                     } else {
@@ -576,15 +579,22 @@ impl FieldMetadata {
                     }
                 }
             } else {
+                // FIXED: Properly balance snapshots
                 let trail_behavior = if trailing {
-                    quote!(tokens.discard_snapshot(); break;)
+                    quote! {
+                        tokens.discard_snapshot(); // discard inner snapshot
+                        break;
+                    }
                 } else {
-                    quote!(tokens.restore(); break;)
+                    quote! {
+                        tokens.restore(); // restore inner snapshot
+                        break;
+                    }
                 };
                 let oom = if one_or_more {
                     quote! {
                         else {
-                            tokens.restore();
+                            tokens.restore(); // restore outer snapshot
                             return Ok(None);
                         }
                     }
@@ -594,9 +604,9 @@ impl FieldMetadata {
                 quote! {
                     {
                         let mut items = Vec::new();
-                        tokens.snapshot();
+                        tokens.snapshot(); // outer snapshot
 
-                        if let Some(node) = #inner_type::parse(tokens, invalid_pass)? {
+                        if let Some(node) = #inner_type::#parse_n(tokens, invalid_pass)? {
                             items.push(node);
 
                             loop {
@@ -607,11 +617,11 @@ impl FieldMetadata {
                                 };
 
                                 if has_separator {
-                                    tokens.snapshot();
+                                    tokens.snapshot(); // inner snapshot for separator attempt
                                     tokens.consume_next();
 
-                                    if let Some(node) = #inner_type::parse(tokens, invalid_pass)? {
-                                        tokens.discard_snapshot();
+                                    if let Some(node) = #inner_type::#parse_n(tokens, invalid_pass)? {
+                                        tokens.discard_snapshot(); // discard inner snapshot
                                         items.push(node);
                                         continue;
                                     } else {
@@ -623,7 +633,7 @@ impl FieldMetadata {
                             }
                         } #oom
 
-                        tokens.discard_snapshot();
+                        tokens.discard_snapshot(); // discard outer snapshot
                         Ok(Some(items))
                     }
                 }
@@ -644,7 +654,7 @@ impl FieldMetadata {
                         let mut items = Vec::new();
 
                         loop {
-                            if let Some(node) = #inner_type::parse(tokens, invalid_pass)? {
+                            if let Some(node) = #inner_type::#parse_n(tokens, invalid_pass)? {
                                 items.push(node);
                             } else {
                                 break;
@@ -673,7 +683,7 @@ impl FieldMetadata {
                         tokens.snapshot();
 
                         loop {
-                            if let Some(node) = #inner_type::parse(tokens, invalid_pass)? {
+                            if let Some(node) = #inner_type::#parse_n(tokens, invalid_pass)? {
                                 items.push(node);
                             } else {
                                 break;
@@ -841,9 +851,9 @@ impl NodeMetadata {
 
             let else_behavior = if field.attrs.commit {
                 let s = format!("Failed to parse {}", self.name);
-                quote!(return Err(anyhow!(#s));)
+                quote!(tokens.restore(); return Err(anyhow!(#s));)
             } else {
-                quote!(return Ok(None);)
+                quote!(tokens.restore(); return Ok(None);)
             };
             if field.is_storable() {
                 setup.append_all(quote! {
@@ -898,17 +908,25 @@ impl NodeMetadata {
 
                         if field.is_storable() {
                             setup.append_all(quote! {
-                                let Some(#f_name) = { #f_impl }? else { return Ok(None); };
+                                let Some(#f_name) = { #f_impl }? else {
+                                    tokens.restore();
+                                    return Ok(None);
+                                };
                             });
                         } else {
                             setup.append_all(quote! {
-                                let Some(_) = { #f_impl }? else { return Ok(None); };
+                                let Some(_) = { #f_impl }? else {
+                                    tokens.restore();
+                                    return Ok(None);
+                                };
                             });
                         }
                     }
 
                     quote! {
+                        tokens.snapshot();
                         #setup
+                        tokens.discard_snapshot();
                         Ok(Some(Self::#name { #names }))
                     }
                 }
@@ -938,32 +956,42 @@ impl NodeMetadata {
 
                         if field.is_storable() {
                             setup.append_all(quote! {
-                                let Some(#name) = { #f_impl }? else { return Ok(None); };
+                                let Some(#name) = { #f_impl }? else {
+                                    tokens.restore();
+                                    return Ok(None);
+                                };
                             });
                         } else {
                             setup.append_all(quote! {
-                                let Some(_) = { #f_impl }? else { return Ok(None); };
+                                let Some(_) = { #f_impl }? else {
+                                    tokens.restore();
+                                    return Ok(None);
+                                };
                             });
                         }
                     }
 
                     quote! {
+                        tokens.snapshot();
                         #setup
+                        tokens.discard_snapshot();
                         Ok(Some(Self::#name(#names)))
                     }
                 }
             };
 
             body.append_all(quote! {
-                if let Some(node) = { #variant_impl }? {
-                    Ok(Some(node))
+                if let Result::Ok(Some(node)) = (|| -> Result<Option<Self>> { #variant_impl })() {
+                    return Ok(Some(node));
                 }
             });
 
             if i < variants.len() - 1 {
-                body.append_all(quote! { else });
+                // Continue to next variant
             } else {
-                body.append_all(quote! { else { Ok(None) } });
+                body.append_all(quote! {
+                    Ok(None)
+                });
             }
         }
 
@@ -1009,6 +1037,7 @@ pub fn node(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
 #[proc_macro_attribute]
 pub fn iterative_node(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let parse_n = syn::Ident::new(PARSE_NAME, Span::call_site());
     let input = parse_macro_input!(item as DeriveInput);
     let parsed = parse_macro_input!(attr as IterativeNodeArgs);
 
@@ -1023,12 +1052,14 @@ pub fn iterative_node(attr: TokenStream, item: TokenStream) -> TokenStream {
         let value = case.value;
         switch.append_all(quote! {
             if matches!(tk.value, #value) {
+                tokens.snapshot(); // FIXED: Add snapshot for each case attempt
                 tokens.consume_next();
 
-                let Some(b) = #rule::parse(tokens, invalid_pass)? else {
+                let Some(b) = #rule::#parse_n(tokens, invalid_pass)? else {
                     tokens.restore();
-                    return Ok(None)
+                    break;
                 };
+                tokens.discard_snapshot();
                 a = Self::#variant(Box::new(a), b);
 
             } else
@@ -1039,7 +1070,7 @@ pub fn iterative_node(attr: TokenStream, item: TokenStream) -> TokenStream {
         impl Node for #struct_name {
             fn parse(tokens: &mut ParseTokens, invalid_pass: bool) -> Result<Option<Self>> {
                 tokens.snapshot();
-                let Some(a) = #rule::parse(tokens, invalid_pass)? else {
+                let Some(a) = #rule::#parse_n(tokens, invalid_pass)? else {
                     tokens.restore();
                     return Ok(None)
                 };
@@ -1099,97 +1130,83 @@ fn parse_node_metadata(input: &DeriveInput) -> syn::Result<NodeMetadata> {
                     .unnamed
                     .iter()
                     .enumerate()
-                    .filter_map(|(idx, f)| {
+                    .filter_map(|(i, f)| {
                         if is_skip_field(&f.attrs) {
                             None
                         } else {
-                            Some(parse_field_metadata(
-                                FieldName::Indexed(idx),
-                                &f.ty,
-                                &f.attrs,
-                            ))
+                            Some(parse_field_metadata(FieldName::Indexed(i), &f.ty, &f.attrs))
                         }
                     })
                     .collect::<syn::Result<Vec<_>>>()?;
                 NodeKind::TupleStruct(field_metas)
             }
-            Fields::Unit => {
-                return Err(syn::Error::new_spanned(
-                    input,
-                    "Unit structs are not supported",
-                ));
-            }
+            Fields::Unit => NodeKind::Struct(Vec::new()),
         },
         Data::Enum(data_enum) => {
             let variants = data_enum
                 .variants
                 .iter()
-                .map(parse_variant_metadata)
+                .map(|variant| {
+                    let name = variant.ident.clone();
+                    match &variant.fields {
+                        Fields::Named(fields) => {
+                            let field_metas = fields
+                                .named
+                                .iter()
+                                .filter_map(|f| {
+                                    if is_skip_field(&f.attrs) {
+                                        None
+                                    } else {
+                                        Some(parse_field_metadata(
+                                            FieldName::Named(f.ident.clone().unwrap()),
+                                            &f.ty,
+                                            &f.attrs,
+                                        ))
+                                    }
+                                })
+                                .collect::<syn::Result<Vec<_>>>()?;
+                            Ok(VariantMetadata::Struct {
+                                name,
+                                fields: field_metas,
+                            })
+                        }
+                        Fields::Unnamed(fields) => {
+                            let field_metas = fields
+                                .unnamed
+                                .iter()
+                                .enumerate()
+                                .filter_map(|(i, f)| {
+                                    if is_skip_field(&f.attrs) {
+                                        None
+                                    } else {
+                                        Some(parse_field_metadata(
+                                            FieldName::Indexed(i),
+                                            &f.ty,
+                                            &f.attrs,
+                                        ))
+                                    }
+                                })
+                                .collect::<syn::Result<Vec<_>>>()?;
+                            Ok(VariantMetadata::Tuple {
+                                name,
+                                fields: field_metas,
+                            })
+                        }
+                        Fields::Unit => Ok(VariantMetadata::Tuple {
+                            name,
+                            fields: Vec::new(),
+                        }),
+                    }
+                })
                 .collect::<syn::Result<Vec<_>>>()?;
             NodeKind::Enum(variants)
         }
         Data::Union(_) => {
-            return Err(syn::Error::new_spanned(input, "Unions are not supported"));
+            return Err(syn::Error::new_spanned(input, "Unions are not supported"))
         }
     };
 
     Ok(NodeMetadata { name, kind })
-}
-
-fn parse_variant_metadata(variant: &syn::Variant) -> syn::Result<VariantMetadata> {
-    let name = variant.ident.clone();
-
-    match &variant.fields {
-        Fields::Named(fields) => {
-            let field_metas = fields
-                .named
-                .iter()
-                .filter_map(|f| {
-                    if is_skip_field(&f.attrs) {
-                        None
-                    } else {
-                        Some(parse_field_metadata(
-                            FieldName::Named(f.ident.clone().unwrap()),
-                            &f.ty,
-                            &f.attrs,
-                        ))
-                    }
-                })
-                .collect::<syn::Result<Vec<_>>>()?;
-
-            Ok(VariantMetadata::Struct {
-                name,
-                fields: field_metas,
-            })
-        }
-        Fields::Unnamed(fields) => {
-            let field_metas = fields
-                .unnamed
-                .iter()
-                .enumerate()
-                .filter_map(|(idx, f)| {
-                    if is_skip_field(&f.attrs) {
-                        None
-                    } else {
-                        Some(parse_field_metadata(
-                            FieldName::Indexed(idx),
-                            &f.ty,
-                            &f.attrs,
-                        ))
-                    }
-                })
-                .collect::<syn::Result<Vec<_>>>()?;
-
-            Ok(VariantMetadata::Tuple {
-                name,
-                fields: field_metas,
-            })
-        }
-        Fields::Unit => Err(syn::Error::new_spanned(
-            variant,
-            "Unit variants are not supported",
-        )),
-    }
 }
 
 fn is_skip_field(attrs: &[syn::Attribute]) -> bool {

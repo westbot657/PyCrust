@@ -1,23 +1,29 @@
+use std::fmt::Debug;
 use node_macro::{iterative_node, node};
 use crate::core::types::*;
 use anyhow::{Result, anyhow, Ok};
 
 pub trait Node
 where
-    Self: Sized
+    Self: Sized + Debug
 {
+    fn parse_debug(tokens: &mut ParseTokens, invalid_pass: bool) -> Result<Option<Self>> {
+        let x = Self::parse(tokens, invalid_pass)?;
+        println!("Parsed node {}: {x:#?}", std::any::type_name::<Self>());
+        Ok(x)
+    }
     fn parse(tokens: &mut ParseTokens, invalid_pass: bool) -> Result<Option<Self>>;
 }
 
 #[node]
 pub struct FileNode {
     pub statements: StatementsNode,
-    #[pass_if(TokenValue::EndMarker)]
+    #[token(TokenValue::EndMarker)]
     _end_marker: ()
 }
 
 #[node]
-pub struct EvalNode(pub ExpressionsNode, #[token(TokenValue::Newline)] pub Vec<Token>, #[pass_if(TokenValue::EndMarker)] ());
+pub struct EvalNode(pub ExpressionsNode, #[token(TokenValue::Newline)] pub Vec<Token>, #[token(TokenValue::EndMarker)] ());
 
 // GENERAL STATEMENTS
 // ==================
@@ -138,12 +144,14 @@ pub enum RaiseStmtNode {
 
 #[node]
 pub struct PassStmtNode(#[token(TokenValue::Keyword(Keyword::Pass))] pub Token);
+
 #[node]
 pub struct BreakStmtNode(#[token(TokenValue::Keyword(Keyword::Break))] pub Token);
+
 #[node]
 pub struct ContinueStmtNode(#[token(TokenValue::Keyword(Keyword::Continue))] pub Token);
 
-// 'global' ','.NAME+
+
 #[node]
 pub struct GlobalStmtNode {
     #[token(TokenValue::Keyword(Keyword::Global))]
@@ -1400,7 +1408,7 @@ impl Node for PrimaryNode {
     fn parse(tokens: &mut ParseTokens, invalid_pass: bool) -> Result<Option<Self>> {
         tokens.snapshot();
 
-        let Some(atom) = AtomNode::parse(tokens, invalid_pass)? else {
+        let Some(atom) = AtomNode::parse_debug(tokens, invalid_pass)? else {
             tokens.restore();
             return Ok(None);
         };
@@ -1436,7 +1444,7 @@ impl Node for PrimaryNode {
                     tokens.snapshot();
                     tokens.consume_next();
 
-                    match SlicesNode::parse(tokens, invalid_pass) {
+                    match SlicesNode::parse_debug(tokens, invalid_pass) {
                         Result::Ok(Some(slices)) => {
                             if !matches!(tokens.consume_next(), Some(Token { value: TokenValue::Symbol(Symbol::RBracket), .. })) {
                                 tokens.restore();
@@ -1459,7 +1467,7 @@ impl Node for PrimaryNode {
                 TokenValue::Symbol(Symbol::LParen) => {
                     tokens.snapshot();
 
-                    match GenexpNode::parse(tokens, invalid_pass) {
+                    match GenexpNode::parse_debug(tokens, invalid_pass) {
                         Result::Ok(Some(genexp)) => {
                             tokens.discard_snapshot();
                             p = PrimaryNode::Genexp(Box::new(p), genexp);
@@ -1467,7 +1475,7 @@ impl Node for PrimaryNode {
                         Result::Ok(None) => {
                             tokens.consume_next();
 
-                            match ArgumentsNode::parse(tokens, invalid_pass) {
+                            match ArgumentsNode::parse_debug(tokens, invalid_pass) {
                                 Result::Ok(args) => {
                                     if !matches!(tokens.consume_next(), Some(Token { value: TokenValue::Symbol(Symbol::RParen), .. })) {
                                         tokens.restore();
@@ -2011,7 +2019,7 @@ impl Node for TPrimaryNode {
     fn parse(tokens: &mut ParseTokens, invalid_pass: bool) -> Result<Option<Self>> {
         tokens.snapshot();
 
-        let Some(atom) = AtomNode::parse(tokens, invalid_pass)? else {
+        let Some(atom) = AtomNode::parse_debug(tokens, invalid_pass)? else {
             tokens.restore();
             return Ok(None)
         };
@@ -2048,7 +2056,7 @@ impl Node for TPrimaryNode {
                 TokenValue::Symbol(Symbol::LBracket) => {
                     tokens.snapshot();
                     tokens.consume_next();
-                    match SlicesNode::parse(tokens, invalid_pass) {
+                    match SlicesNode::parse_debug(tokens, invalid_pass) {
                         Result::Ok(Some(slices)) => {
                             if !matches!(tokens.consume_next(), Some(Token{ value: TokenValue::Symbol(Symbol::RBracket), ..})) {
                                 tokens.restore();
@@ -2073,7 +2081,7 @@ impl Node for TPrimaryNode {
                 }
                 TokenValue::Symbol(Symbol::LParen) => {
                     tokens.snapshot();
-                    match GenexpNode::parse(tokens, invalid_pass) {
+                    match GenexpNode::parse_debug(tokens, invalid_pass) {
                         Result::Ok(Some(genexp)) => {
                             if !t_lookahead(tokens) {
                                 tokens.restore();
@@ -2084,7 +2092,7 @@ impl Node for TPrimaryNode {
                         }
                         Result::Ok(None) => {
                             tokens.consume_next();
-                            match ArgumentsNode::parse(tokens, invalid_pass) {
+                            match ArgumentsNode::parse_debug(tokens, invalid_pass) {
                                 Result::Ok(args) => {
                                     if !matches!(tokens.consume_next(), Some(Token { value: TokenValue::Symbol(Symbol::RParen), .. })) {
                                         tokens.restore();

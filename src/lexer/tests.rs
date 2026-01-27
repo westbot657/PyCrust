@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 use crate::lexer::lexer::{Lexer, LexerContext};
 use crate::lexer::unescape::unescape;
+use crate::parser::node::{FileNode, Node};
 
 fn do_unescape(msg: &str, literal: &str) -> Result<()> {
     let mut ctx = LexerContext::new("<test-unescape>".to_string());
@@ -39,5 +40,26 @@ pub fn test_lexer() -> Result<()> {
     println!("output tokens: {}", lexer.get_tokens());
 
     Ok(())
+}
+
+#[test]
+pub fn test_parser() -> Result<()> {
+
+    // let source = include_str!("../../test_scripts/lexer_test.py").to_string();
+
+    let source = "x = 5".to_string();
+
+    let mut lexer = Lexer::new("<python-test>".to_string(), source);
+
+    lexer.tokenize()?;
+
+    let mut tokens = lexer.to_tokens().into_parse_tokens();
+
+    let ast = FileNode::parse_debug(&mut tokens, false)?;
+
+    println!("Output AST: {ast:#?}");
+
+    Ok(())
+
 }
 

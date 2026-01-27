@@ -163,6 +163,10 @@ impl Lexer {
 
         Ok(context.to_result())
     }
+    
+    pub fn to_tokens(self) -> Tokens {
+        self.tokens
+    }
 
     pub fn get_line_by_number(&self, line: usize) -> Option<&str> {
         self.source.lines().nth(line-1)
