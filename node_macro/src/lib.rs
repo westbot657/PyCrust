@@ -4,7 +4,6 @@ use quote::{quote, ToTokens, TokenStreamExt};
 use syn::{parse_macro_input, Data, DeriveInput, Fields, Token, parenthesized, Type};
 use syn::parse::{Parse, ParseStream};
 
-/// Metadata for the entire node
 #[derive(Debug)]
 struct NodeMetadata {
     name: syn::Ident,
@@ -168,19 +167,16 @@ impl FieldMetadata {
         let ty = &self.ty;
         let commit = self.attrs.commit;
 
-        // Generate prefix checks
         let mut prefix_code = proc_macro2::TokenStream::new();
         for check in &self.attrs.prefix {
             prefix_code.append_all(check.generate_impl(commit));
         }
 
-        // Generate postfix checks
         let mut postfix_code = proc_macro2::TokenStream::new();
         for check in &self.attrs.postfix {
             postfix_code.append_all(check.generate_impl(commit));
         }
 
-        // Generate pattern checks
         let mut pattern_code = proc_macro2::TokenStream::new();
         for check in &self.attrs.pattern {
             pattern_code.append_all(check.generate_impl(commit));
@@ -198,10 +194,8 @@ impl FieldMetadata {
                         };
 
                         if is_of_type(inner_type, "Token") {
-                            // Vec<Token>
                             self.generate_vec_token()
                         } else {
-                            // Vec<N> where N: Node
                             self.generate_vec_node(inner_type)
                         }
                     } else {
@@ -216,16 +210,13 @@ impl FieldMetadata {
                         };
 
                         if is_of_type(inner_type, "Token") {
-                            // Option<Token>
                             self.generate_option_token()
                         } else if matches!(inner_type, Type::Tuple(t) if t.elems.is_empty()) {
-                            // Option<()> - optional unit type
                             self.generate_option_unit()
                         } else {
-                            // Option<N> where N: Node
                             quote! {
                                 #prefix_code
-                                let result = #inner_type::parse(tokens)?;
+                                let result = #inner_type::parse(tokens, invalid_pass)?;
                                 #postfix_code
                                 Ok(Some(result))
                             }
@@ -250,7 +241,7 @@ impl FieldMetadata {
 
                         quote! {
                             #prefix_code
-                            let result = if let Some(node) = #inner_type::parse(tokens)? {
+                            let result = if let Some(node) = #inner_type::parse(tokens, invalid_pass)? {
                                 Ok(Some(Box::new(node)))
                             } else {
                                 #fail_code
@@ -263,25 +254,21 @@ impl FieldMetadata {
                     }
                 }
                 "Token" => {
-                    // Token
                     self.generate_token()
                 }
                 "bool" => {
-                    // bool
                     self.generate_bool()
                 }
                 _ => {
-                    // N where N: Node
                     quote! {
                         #prefix_code
-                        let result = #seg::parse(tokens);
+                        let result = #seg::parse(tokens, invalid_pass);
                         #postfix_code
                         result
                     }
                 }
             }
         } else if let Type::Tuple(tuple_ty) = ty {
-            // Unit type ()
             if tuple_ty.elems.is_empty() {
                 self.generate_unit()
             } else {
@@ -362,12 +349,26 @@ impl FieldMetadata {
                 let sep_pattern = &sep.token;
                 let trailing = sep.trailing;
 
+                let trail_behavior = if trailing {
+                    quote!(break;)
+                } else {
+                    quote!(return Err(anyhow!("Unexpected trailing separator"));)
+                };
+                let oom = if one_or_more {
+                    quote! {
+                        if items.is_empty() {
+                            return Err(anyhow!("Expected at least one element"));
+                        }
+                    }
+                } else {
+                    quote!()
+                };
+
                 quote! {
                     let mut items = Vec::new();
 
                     #pattern_code
 
-                    // Try to parse first element
                     if let Some(tok) = tokens.get(0) {
                         if matches!(&tok.value, #pattern) {
                             items.push(tokens.consume_next().unwrap().clone());
@@ -378,14 +379,11 @@ impl FieldMetadata {
                         return Ok(None);
                     }
 
-                    // Parse remaining elements with separator
                     loop {
-                        // Check for separator
                         if let Some(tok) = tokens.get(0) {
                             if matches!(&tok.value, #sep_pattern) {
                                 tokens.consume_next();
 
-                                // Try to parse next element
                                 if let Some(tok) = tokens.get(0) {
                                     if matches!(&tok.value, #pattern) {
                                         items.push(tokens.consume_next().unwrap().clone());
@@ -393,32 +391,29 @@ impl FieldMetadata {
                                     }
                                 }
 
-                                // We consumed separator but no element follows
-                                if #trailing {
-                                    // Trailing separator is allowed
-                                    break;
-                                } else {
-                                    // Trailing separator not allowed, this is an error
-                                    return Err(anyhow!("Unexpected trailing separator"));
-                                }
+                                #trail_behavior
                             } else {
-                                // No separator, we're done
                                 break;
                             }
                         } else {
-                            // EOF, we're done
                             break;
                         }
                     }
 
-                    if #one_or_more && items.is_empty() {
-                        return Err(anyhow!("Expected at least one element"));
-                    }
+                    #oom
 
                     Ok(Some(items))
                 }
             } else {
-                // No separator, just collect matching tokens
+                let oom = if one_or_more {
+                    quote! {
+                        if items.is_empty() {
+                            return Err(anyhow!("Expected at least one element"));
+                        }
+                    }
+                } else {
+                    quote!()
+                };
                 quote! {
                     let mut items = Vec::new();
 
@@ -436,70 +431,13 @@ impl FieldMetadata {
                         }
                     }
 
-                    if #one_or_more && items.is_empty() {
-                        return Err(anyhow!("Expected at least one element"));
-                    }
+                    #oom
 
                     Ok(Some(items))
-                }
-            }
-        } else if !self.attrs.pattern.is_empty() {
-            // Using pattern instead of token
-            let mut pattern_code = proc_macro2::TokenStream::new();
-            for check in &self.attrs.pattern {
-                pattern_code.append_all(check.generate_impl(commit));
-            }
-
-            if let Some(ref sep) = self.attrs.sep {
-                let sep_pattern = &sep.token;
-                let trailing = sep.trailing;
-
-                quote! {
-                    let mut items = Vec::new();
-
-                    // Try to parse first element using pattern
-                    loop {
-                        tokens.snapshot();
-                        let matched = if { #pattern_code true }.is_ok() {
-                            tokens.discard_snapshot();
-                            true
-                        } else {
-                            tokens.restore();
-                            false
-                        };
-
-                        if !matched {
-                            break;
-                        }
-
-                        items.push(Token::default()); // Placeholder since we consumed via pattern
-
-                        // Check for separator
-                        if let Some(tok) = tokens.get(0) {
-                            if matches!(&tok.value, #sep_pattern) {
-                                tokens.consume_next();
-                                continue;
-                            } else {
-                                break;
-                            }
-                        } else {
-                            break;
-                        }
-                    }
-
-                    if #one_or_more && items.is_empty() {
-                        return Err(anyhow!("Expected at least one element"));
-                    }
-
-                    Ok(Some(items))
-                }
-            } else {
-                quote! {
-                    compile_error!("Vec<Token> with pattern but no separator - behavior unclear");
                 }
             }
         } else {
-            quote! { compile_error!("Vec<Token> field must have #[token(...)] or #[pattern(...)] attribute"); }
+            quote! { compile_error!("Vec<Token> field must have #[token(...)] attribute"); }
         }
     }
 
@@ -511,75 +449,158 @@ impl FieldMetadata {
             let sep_pattern = &sep.token;
             let trailing = sep.trailing;
 
-            quote! {
-                {
-                    let mut items = Vec::new();
+            if commit {
+                let trail_behavior = if trailing {
+                    quote!(break;)
+                } else {
+                    quote!(return Err(anyhow!("Expected element after separator"));)
+                };
+                let oom = if one_or_more {
+                    quote!(else { return Err(anyhow!("Expected at least one element")); })
+                } else {
+                    quote!()
+                };
+                quote! {
+                    {
+                        let mut items = Vec::new();
 
-                    // Try to parse first element
-                    if let Some(node) = #inner_type::parse(tokens)? {
-                        items.push(node);
+                        if let Some(node) = #inner_type::parse(tokens, invalid_pass)? {
+                            items.push(node);
 
-                        // Parse remaining elements with separator
-                        loop {
-                            // Check for separator
-                            let has_separator = if let Some(tok) = tokens.get(0) {
-                                matches!(&tok.value, #sep_pattern)
-                            } else {
-                                false
-                            };
-
-                            if has_separator {
-                                tokens.consume_next();
-
-                                // Try to parse next element
-                                if let Some(node) = #inner_type::parse(tokens)? {
-                                    items.push(node);
-                                    continue;
+                            loop {
+                                let has_separator = if let Some(tok) = tokens.get(0) {
+                                    matches!(&tok.value, #sep_pattern)
                                 } else {
-                                    // We consumed separator but no element follows
-                                    if #trailing {
-                                        // Trailing separator is allowed
-                                        break;
-                                    } else {
-                                        // Trailing separator not allowed, this is an error
-                                        return Err(anyhow!("Expected element after separator"));
-                                    }
-                                }
-                            } else {
-                                // No separator, we're done
-                                break;
-                            }
-                        }
-                    } else {
-                        // No first element found
-                        if #one_or_more {
-                            return Err(anyhow!("Expected at least one element"));
-                        }
-                        // If one_or_more is false and we got nothing, items is empty which is fine
-                    }
+                                    false
+                                };
 
-                    Ok(Some(items))
+                                if has_separator {
+                                    tokens.consume_next();
+
+                                    if let Some(node) = #inner_type::parse(tokens, invalid_pass)? {
+                                        items.push(node);
+                                        continue;
+                                    } else {
+                                        #trail_behavior
+                                    }
+                                } else {
+                                    break;
+                                }
+                            }
+                        } #oom
+
+
+                        Ok(Some(items))
+                    }
+                }
+            } else {
+                let trail_behavior = if trailing {
+                    quote!(break;)
+                } else {
+                    quote!(tokens.restore(); return Ok(None);)
+                };
+                let oom = if one_or_more {
+                    quote! {
+                        else {
+                            tokens.restore();
+                            return Ok(None);
+                        }
+                    }
+                } else {
+                    quote!()
+                };
+                quote! {
+                    {
+                        let mut items = Vec::new();
+                        tokens.snapshot();
+
+                        if let Some(node) = #inner_type::parse(tokens, invalid_pass)? {
+                            items.push(node);
+
+                            loop {
+                                let has_separator = if let Some(tok) = tokens.get(0) {
+                                    matches!(&tok.value, #sep_pattern)
+                                } else {
+                                    false
+                                };
+
+                                if has_separator {
+                                    tokens.consume_next();
+
+                                    if let Some(node) = #inner_type::parse(tokens, invalid_pass)? {
+                                        items.push(node);
+                                        continue;
+                                    } else {
+                                        #trail_behavior
+                                    }
+                                } else {
+                                    break;
+                                }
+                            }
+                        } #oom
+
+                        tokens.discard_snapshot();
+                        Ok(Some(items))
+                    }
                 }
             }
         } else {
-            // No separator, just collect nodes
-            quote! {
-                {
-                    let mut items = Vec::new();
-
-                    loop {
-                        if let Some(node) = #inner_type::parse(tokens)? {
-                            items.push(node);
-                        } else {
-                            break;
+            if commit {
+                let oom = if one_or_more {
+                    quote! {
+                        if items.is_empty() {
+                            return Err(anyhow!("Expected at least one element"));
                         }
                     }
+                } else {
+                    quote!()
+                };
+                quote! {
+                    {
+                        let mut items = Vec::new();
 
-                    if #one_or_more && items.is_empty() {
-                        return Err(anyhow!("Expected at least one element"));
+                        loop {
+                            if let Some(node) = #inner_type::parse(tokens, invalid_pass)? {
+                                items.push(node);
+                            } else {
+                                break;
+                            }
+                        }
+
+                        #oom
+
+                        Ok(Some(items))
                     }
+                }
+            } else {
+                let oom = if one_or_more {
+                    quote! {
+                        if items.is_empty() {
+                            tokens.restore();
+                            return Ok(None);
+                        }
+                    }
+                } else {
+                    quote!()
+                };
+                quote! {
+                    {
+                        let mut items = Vec::new();
+                        tokens.snapshot();
 
-                    Ok(Some(items))
+                        loop {
+                            if let Some(node) = #inner_type::parse(tokens, invalid_pass)? {
+                                items.push(node);
+                            } else {
+                                break;
+                            }
+                        }
+
+                        #oom
+
+                        tokens.discard_snapshot();
+                        Ok(Some(items))
+                    }
                 }
             }
         }
@@ -626,7 +647,6 @@ impl FieldMetadata {
     fn generate_unit(&self) -> proc_macro2::TokenStream {
         let commit = self.attrs.commit;
 
-        // Check if we have any prefix checks (which include pass_if/fail_if)
         if !self.attrs.prefix.is_empty() {
             let mut code = proc_macro2::TokenStream::new();
             for check in &self.attrs.prefix {
@@ -658,13 +678,10 @@ impl FieldMetadata {
     }
 
     fn generate_option_unit(&self) -> proc_macro2::TokenStream {
-        // Optional unit type - same checks as unit but doesn't fail if not matched
 
-        // Check if we have any prefix checks (which include pass_if/fail_if)
         if !self.attrs.prefix.is_empty() {
             let mut code = proc_macro2::TokenStream::new();
             for check in &self.attrs.prefix {
-                // For optional, we never want hard fails
                 code.append_all(check.generate_impl(false));
             }
             quote! {
@@ -695,7 +712,6 @@ impl FieldMetadata {
         } else if !self.attrs.pattern.is_empty() {
             let mut pattern_code = proc_macro2::TokenStream::new();
             for check in &self.attrs.pattern {
-                // For optional, we never want hard fails
                 pattern_code.append_all(check.generate_impl(false));
             }
             quote! {
@@ -717,7 +733,6 @@ impl FieldMetadata {
 
 impl NodeMetadata {
     fn struct_impl(fields: &Vec<FieldMetadata>, is_tuple: bool) -> proc_macro2::TokenStream {
-        // Separate storable and non-storable fields
         let storable_fields: Vec<_> = fields.iter().filter(|f| f.is_storable()).collect();
 
         let names = storable_fields
@@ -745,7 +760,6 @@ impl NodeMetadata {
                     let Some(#f_name) = { #f_impl }? else { return Ok(None); };
                 });
             } else {
-                // For unit and bool types, we still need to run the parse but don't store
                 setup.append_all(quote! {
                     let Some(_) = { #f_impl }? else { return Ok(None); };
                 });
@@ -894,7 +908,7 @@ pub fn node(_attr: TokenStream, item: TokenStream) -> TokenStream {
         #cleaned_input
 
         impl Node for #struct_name {
-            fn parse(tokens: &mut ParseTokens) -> Result<Option<Self>> {
+            fn parse(tokens: &mut ParseTokens, invalid_pass: bool) -> Result<Option<Self>> {
                 #imp
             }
         }
@@ -1167,7 +1181,6 @@ fn strip_node_attrs(input: &mut DeriveInput) {
     match &mut input.data {
         Data::Struct(data_struct) => match &mut data_struct.fields {
             Fields::Named(fields) => {
-                // Remove unit type, bool, and Option<()> fields, and strip attrs from remaining
                 fields.named = fields
                     .named
                     .iter()
@@ -1183,7 +1196,6 @@ fn strip_node_attrs(input: &mut DeriveInput) {
                     .collect();
             }
             Fields::Unnamed(fields) => {
-                // Remove unit type, bool, and Option<()> fields, and strip attrs from remaining
                 fields.unnamed = fields
                     .unnamed
                     .iter()
@@ -1204,7 +1216,6 @@ fn strip_node_attrs(input: &mut DeriveInput) {
             for variant in data_enum.variants.iter_mut() {
                 match &mut variant.fields {
                     Fields::Named(fields) => {
-                        // Remove unit type, bool, and Option<()> fields, and strip attrs from remaining
                         fields.named = fields
                             .named
                             .iter()
@@ -1220,7 +1231,6 @@ fn strip_node_attrs(input: &mut DeriveInput) {
                             .collect();
                     }
                     Fields::Unnamed(fields) => {
-                        // Remove unit type, bool, and Option<()> fields, and strip attrs from remaining
                         fields.unnamed = fields
                             .unnamed
                             .iter()
