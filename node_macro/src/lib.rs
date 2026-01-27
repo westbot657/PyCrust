@@ -88,11 +88,59 @@ struct FieldAttrs {
     pattern: Vec<TokenCheck>,
 }
 
+struct IterativeNodeArgs {
+    rule: Type,
+    default: syn::Ident,
+    cases: Vec<IterativeCase>,
+}
+
+struct IterativeCase {
+    variant: syn::Ident,
+    value: PatWithGuard,
+}
+
+impl Parse for IterativeNodeArgs {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        // rule
+        let rule: Type = input.parse()?;
+        input.parse::<Token![,]>()?;
+
+        // default variant
+        let default: syn::Ident = input.parse()?;
+        input.parse::<Token![,]>()?;
+
+        // cases: Variant : PatWithGuard, ...
+        let mut cases = Vec::new();
+
+        while !input.is_empty() {
+            let variant: syn::Ident = input.parse()?;
+            input.parse::<Token![:]>()?;
+            let value: PatWithGuard = input.parse()?;
+
+            cases.push(IterativeCase { variant, value });
+
+            if input.peek(Token![,]) {
+                input.parse::<Token![,]>()?;
+            } else {
+                break;
+            }
+        }
+
+        Ok(Self {
+            rule,
+            default,
+            cases,
+        })
+    }
+}
+
+
+
 #[derive(Debug, Clone)]
 enum TokenCheck {
     Token(PatWithGuard),
-    PassIf(syn::Pat),
-    FailIf(syn::Pat),
+    PassIf(PatWithGuard),
+    FailIf(PatWithGuard),
 }
 
 #[derive(Debug)]
@@ -529,9 +577,9 @@ impl FieldMetadata {
                 }
             } else {
                 let trail_behavior = if trailing {
-                    quote!(break;)
+                    quote!(tokens.discard_snapshot(); break;)
                 } else {
-                    quote!(tokens.restore(); return Ok(None);)
+                    quote!(tokens.restore(); break;)
                 };
                 let oom = if one_or_more {
                     quote! {
@@ -559,9 +607,11 @@ impl FieldMetadata {
                                 };
 
                                 if has_separator {
+                                    tokens.snapshot();
                                     tokens.consume_next();
 
                                     if let Some(node) = #inner_type::parse(tokens, invalid_pass)? {
+                                        tokens.discard_snapshot();
                                         items.push(node);
                                         continue;
                                     } else {
@@ -766,7 +816,7 @@ impl FieldMetadata {
 }
 
 impl NodeMetadata {
-    fn struct_impl(fields: &Vec<FieldMetadata>, is_tuple: bool) -> proc_macro2::TokenStream {
+    fn struct_impl(&self, fields: &Vec<FieldMetadata>, is_tuple: bool) -> proc_macro2::TokenStream {
         let storable_fields: Vec<_> = fields.iter().filter(|f| f.is_storable()).collect();
 
         let names = storable_fields
@@ -789,13 +839,19 @@ impl NodeMetadata {
             };
             let f_impl = field.generate_impl();
 
+            let else_behavior = if field.attrs.commit {
+                let s = format!("Failed to parse {}", self.name);
+                quote!(return Err(anyhow!(#s));)
+            } else {
+                quote!(return Ok(None);)
+            };
             if field.is_storable() {
                 setup.append_all(quote! {
-                    let Some(#f_name) = { #f_impl }? else { return Ok(None); };
+                    let Some(#f_name) = { #f_impl }? else { #else_behavior };
                 });
             } else {
                 setup.append_all(quote! {
-                    let Some(_) = { #f_impl }? else { return Ok(None); };
+                    let Some(_) = { #f_impl }? else { #else_behavior };
                 });
             }
         }
@@ -916,8 +972,8 @@ impl NodeMetadata {
 
     fn get_parse_impl(&self) -> proc_macro2::TokenStream {
         match &self.kind {
-            NodeKind::Struct(fields) => Self::struct_impl(fields, false),
-            NodeKind::TupleStruct(fields) => Self::struct_impl(fields, true),
+            NodeKind::Struct(fields) => self.struct_impl(fields, false),
+            NodeKind::TupleStruct(fields) => self.struct_impl(fields, true),
             NodeKind::Enum(variants) => Self::enum_impl(variants),
         }
     }
@@ -950,6 +1006,70 @@ pub fn node(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     output.into()
 }
+
+#[proc_macro_attribute]
+pub fn iterative_node(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(item as DeriveInput);
+    let parsed = parse_macro_input!(attr as IterativeNodeArgs);
+
+    let struct_name = &input.ident;
+    let rule = parsed.rule;
+    let default = parsed.default;
+
+    let mut switch = proc_macro2::TokenStream::new();
+
+    for case in parsed.cases {
+        let variant = case.variant;
+        let value = case.value;
+        switch.append_all(quote! {
+            if matches!(tk.value, #value) {
+                tokens.consume_next();
+
+                let Some(b) = #rule::parse(tokens, invalid_pass)? else {
+                    tokens.restore();
+                    return Ok(None)
+                };
+                a = Self::#variant(Box::new(a), b);
+
+            } else
+        })
+    }
+
+    let imp = quote! {
+        impl Node for #struct_name {
+            fn parse(tokens: &mut ParseTokens, invalid_pass: bool) -> Result<Option<Self>> {
+                tokens.snapshot();
+                let Some(a) = #rule::parse(tokens, invalid_pass)? else {
+                    tokens.restore();
+                    return Ok(None)
+                };
+                let mut a = Self::#default(a);
+                loop {
+                    if let Some(tk) = tokens.get(0) {
+                        #switch {
+                            break;
+                        }
+                    } else {
+                        break;
+                    };
+
+                }
+                tokens.discard_snapshot();
+                Ok(Some(a))
+            }
+        }
+    };
+
+
+    quote! {
+        #[derive(Debug)]
+        #input
+
+        #imp
+    }
+        .into()
+}
+
 
 fn parse_node_metadata(input: &DeriveInput) -> syn::Result<NodeMetadata> {
     let name = input.ident.clone();
@@ -1095,10 +1215,10 @@ fn parse_field_metadata(
 
             field_attrs.token = Some(expr);
         } else if attr.path().is_ident("pass_if") {
-            let expr: syn::Pat = attr.parse_args_with(syn::Pat::parse_multi)?;
+            let expr: PatWithGuard = attr.parse_args()?;
             field_attrs.prefix.push(TokenCheck::PassIf(expr));
         } else if attr.path().is_ident("fail_if") {
-            let expr: syn::Pat = attr.parse_args_with(syn::Pat::parse_multi)?;
+            let expr: PatWithGuard = attr.parse_args()?;
             field_attrs.prefix.push(TokenCheck::FailIf(expr));
         } else if attr.path().is_ident("sep") {
             field_attrs.sep = Some(parse_sep_attr(attr)?);
@@ -1176,7 +1296,7 @@ fn parse_token_check_list(attr: &syn::Attribute) -> syn::Result<Vec<TokenCheck>>
                     }
                     let content;
                     parenthesized!(content in input);
-                    let expr: syn::Pat = syn::Pat::parse_multi(&content)?;
+                    let expr: PatWithGuard = content.parse()?;
                     checks.push(TokenCheck::PassIf(expr));
                 } else if ident == "fail_if" {
                     if !input.peek(syn::token::Paren) {
@@ -1187,7 +1307,7 @@ fn parse_token_check_list(attr: &syn::Attribute) -> syn::Result<Vec<TokenCheck>>
                     }
                     let content;
                     parenthesized!(content in input);
-                    let expr: syn::Pat = syn::Pat::parse_multi(&content)?;
+                    let expr: PatWithGuard = content.parse()?;
                     checks.push(TokenCheck::FailIf(expr));
                 } else {
                     let msg = format!(

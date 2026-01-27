@@ -60,6 +60,7 @@ pub enum Keyword {
     Assert,
     Async,
     Await,
+    Type,
 }
 
 impl Keyword {
@@ -97,6 +98,7 @@ impl Keyword {
             "assert" => Self::Assert,
             "async" => Self::Async,
             "await" => Self::Await,
+            "type" => Self::Type,
             _ => return None,
         })
     }
