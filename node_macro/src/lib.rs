@@ -141,7 +141,27 @@ impl TokenCheck {
 
 impl FieldMetadata {
     fn is_storable(&self) -> bool {
-        !matches!(self.ty, Type::Tuple(_)) && !is_of_type(&self.ty, "bool")
+        if matches!(self.ty, Type::Tuple(_)) {
+            return false;
+        }
+
+        if let Type::Path(type_path) = &self.ty {
+            if let Some(seg) = type_path.path.segments.last() {
+                if seg.ident == "Option" {
+                    if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
+                        if let Some(inner_arg) = args.args.first() {
+                            if let Some(inner_type) = generic_arg_as_type(inner_arg) {
+                                if matches!(inner_type, Type::Tuple(t) if t.elems.is_empty()) {
+                                    return false;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        true
     }
 
     fn generate_impl(&self) -> proc_macro2::TokenStream {
@@ -171,7 +191,7 @@ impl FieldMetadata {
 
             match seg.ident.to_string().as_str() {
                 "Vec" => {
-                    if let syn::PathArguments::AngleBracketed(ref args) = seg.arguments {
+                    if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
                         let inner_ty = args.args.first().unwrap();
                         let Some(inner_type) = generic_arg_as_type(inner_ty) else {
                             return quote!(compile_error!("Vec must have a type argument"));
@@ -189,7 +209,7 @@ impl FieldMetadata {
                     }
                 }
                 "Option" => {
-                    if let syn::PathArguments::AngleBracketed(ref args) = seg.arguments {
+                    if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
                         let inner_ty = args.args.first().unwrap();
                         let Some(inner_type) = generic_arg_as_type(inner_ty) else {
                             return quote!(compile_error!("Option must have a type argument"));
@@ -198,6 +218,9 @@ impl FieldMetadata {
                         if is_of_type(inner_type, "Token") {
                             // Option<Token>
                             self.generate_option_token()
+                        } else if matches!(inner_type, Type::Tuple(t) if t.elems.is_empty()) {
+                            // Option<()> - optional unit type
+                            self.generate_option_unit()
                         } else {
                             // Option<N> where N: Node
                             quote! {
@@ -631,6 +654,63 @@ impl FieldMetadata {
             }
         } else {
             quote! { compile_error!("Unit type () field must have #[token(...)], #[pattern(...)], #[prefix(...)] with pass_if/fail_if/token, or direct #[pass_if(...)]/#[fail_if(...)] attribute"); }
+        }
+    }
+
+    fn generate_option_unit(&self) -> proc_macro2::TokenStream {
+        // Optional unit type - same checks as unit but doesn't fail if not matched
+
+        // Check if we have any prefix checks (which include pass_if/fail_if)
+        if !self.attrs.prefix.is_empty() {
+            let mut code = proc_macro2::TokenStream::new();
+            for check in &self.attrs.prefix {
+                // For optional, we never want hard fails
+                code.append_all(check.generate_impl(false));
+            }
+            quote! {
+                tokens.snapshot();
+                let result = if { #code true }.is_ok() {
+                    tokens.discard_snapshot();
+                    Some(())
+                } else {
+                    tokens.restore();
+                    None
+                };
+                Ok(Some(result))
+            }
+        } else if let Some(ref pattern) = self.attrs.token {
+            quote! {
+                let result = if let Some(tok) = tokens.get(0) {
+                    if matches!(&tok.value, #pattern) {
+                        tokens.consume_next();
+                        Some(())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                Ok(Some(result))
+            }
+        } else if !self.attrs.pattern.is_empty() {
+            let mut pattern_code = proc_macro2::TokenStream::new();
+            for check in &self.attrs.pattern {
+                // For optional, we never want hard fails
+                pattern_code.append_all(check.generate_impl(false));
+            }
+            quote! {
+                tokens.snapshot();
+                let result = if { #pattern_code true }.is_ok() {
+                    tokens.discard_snapshot();
+                    Some(())
+                } else {
+                    tokens.restore();
+                    None
+                };
+                Ok(Some(result))
+            }
+        } else {
+            quote! { compile_error!("Option<()> field must have #[token(...)], #[pattern(...)], #[prefix(...)] with pass_if/fail_if/token, or direct #[pass_if(...)]/#[fail_if(...)] attribute"); }
         }
     }
 }
@@ -1087,15 +1167,12 @@ fn strip_node_attrs(input: &mut DeriveInput) {
     match &mut input.data {
         Data::Struct(data_struct) => match &mut data_struct.fields {
             Fields::Named(fields) => {
-                // Remove unit type and bool fields, and strip attrs from remaining
+                // Remove unit type, bool, and Option<()> fields, and strip attrs from remaining
                 fields.named = fields
                     .named
                     .iter()
                     .filter_map(|field| {
-                        let is_unit = matches!(field.ty, Type::Tuple(ref t) if t.elems.is_empty());
-                        let is_bool = is_of_type(&field.ty, "bool");
-
-                        if is_unit || is_bool {
+                        if should_exclude_field(&field.ty) {
                             None
                         } else {
                             let mut field = field.clone();
@@ -1106,15 +1183,12 @@ fn strip_node_attrs(input: &mut DeriveInput) {
                     .collect();
             }
             Fields::Unnamed(fields) => {
-                // Remove unit type and bool fields, and strip attrs from remaining
+                // Remove unit type, bool, and Option<()> fields, and strip attrs from remaining
                 fields.unnamed = fields
                     .unnamed
                     .iter()
                     .filter_map(|field| {
-                        let is_unit = matches!(field.ty, Type::Tuple(ref t) if t.elems.is_empty());
-                        let is_bool = is_of_type(&field.ty, "bool");
-
-                        if is_unit || is_bool {
+                        if should_exclude_field(&field.ty) {
                             None
                         } else {
                             let mut field = field.clone();
@@ -1130,15 +1204,12 @@ fn strip_node_attrs(input: &mut DeriveInput) {
             for variant in data_enum.variants.iter_mut() {
                 match &mut variant.fields {
                     Fields::Named(fields) => {
-                        // Remove unit type and bool fields, and strip attrs from remaining
+                        // Remove unit type, bool, and Option<()> fields, and strip attrs from remaining
                         fields.named = fields
                             .named
                             .iter()
                             .filter_map(|field| {
-                                let is_unit = matches!(field.ty, Type::Tuple(ref t) if t.elems.is_empty());
-                                let is_bool = is_of_type(&field.ty, "bool");
-
-                                if is_unit || is_bool {
+                                if should_exclude_field(&field.ty) {
                                     None
                                 } else {
                                     let mut field = field.clone();
@@ -1149,15 +1220,12 @@ fn strip_node_attrs(input: &mut DeriveInput) {
                             .collect();
                     }
                     Fields::Unnamed(fields) => {
-                        // Remove unit type and bool fields, and strip attrs from remaining
+                        // Remove unit type, bool, and Option<()> fields, and strip attrs from remaining
                         fields.unnamed = fields
                             .unnamed
                             .iter()
                             .filter_map(|field| {
-                                let is_unit = matches!(field.ty, Type::Tuple(ref t) if t.elems.is_empty());
-                                let is_bool = is_of_type(&field.ty, "bool");
-
-                                if is_unit || is_bool {
+                                if should_exclude_field(&field.ty) {
                                     None
                                 } else {
                                     let mut field = field.clone();
@@ -1173,6 +1241,30 @@ fn strip_node_attrs(input: &mut DeriveInput) {
         }
         Data::Union(_) => {}
     }
+}
+
+fn should_exclude_field(ty: &Type) -> bool {
+    if matches!(ty, Type::Tuple(t) if t.elems.is_empty()) {
+        return true;
+    }
+
+    if let Type::Path(type_path) = ty {
+        if let Some(seg) = type_path.path.segments.last() {
+            if seg.ident == "Option" {
+                if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
+                    if let Some(inner_arg) = args.args.first() {
+                        if let Some(inner_type) = generic_arg_as_type(inner_arg) {
+                            if matches!(inner_type, Type::Tuple(t) if t.elems.is_empty()) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    false
 }
 
 fn strip_field_attrs(attrs: &mut Vec<syn::Attribute>) {

@@ -58,6 +58,8 @@ pub enum Keyword {
     Lambda,
     Del,
     Assert,
+    Async,
+    Await,
 }
 
 impl Keyword {
@@ -93,6 +95,8 @@ impl Keyword {
             "lambda" => Self::Lambda,
             "del" => Self::Del,
             "assert" => Self::Assert,
+            "async" => Self::Async,
+            "await" => Self::Await,
             _ => return None,
         })
     }
