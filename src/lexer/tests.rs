@@ -47,7 +47,7 @@ pub fn test_parser() -> Result<()> {
 
     // let source = include_str!("../../test_scripts/lexer_test.py").to_string();
 
-    let source = "x = 5".to_string();
+    let source = "print(\"Hello, world!\")".to_string();
 
     let mut lexer = Lexer::new("<python-test>".to_string(), source);
 

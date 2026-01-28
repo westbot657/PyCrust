@@ -17,7 +17,7 @@ where
 
 #[node]
 pub struct FileNode {
-    pub statements: StatementsNode,
+    pub statements: Option<StatementsNode>,
     #[token(TokenValue::EndMarker)]
     _end_marker: ()
 }
@@ -1253,6 +1253,7 @@ pub enum NamedExpressionNode {
     Expr(ExpressionNode, #[fail_if(TokenValue::Symbol(Symbol::Walrus))] ()),
 }
 
+// TODO: debug
 #[node]
 pub struct DisjunctionNode {
     #[one_or_more]
