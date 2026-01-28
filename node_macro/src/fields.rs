@@ -307,7 +307,7 @@ impl FieldAttrs {
                 field_attrs.prefix = TokenCheck::parse_list(attr)?
 
             } else if p.is_ident("pattern") {
-                if matches!(ty, FieldType::VecToken | FieldType::Unit | FieldType::OptionUnit | FieldType::Bool) {
+                if matches!(ty, FieldType::Unit | FieldType::OptionUnit | FieldType::Bool) {
                     if !field_attrs.pattern.is_empty() {
                         return Err(syn::Error::new_spanned(attr, "pattern has already been defined"))
                     } else if field_attrs.token.is_some() {
@@ -380,7 +380,7 @@ impl Parse for SepAttr {
         let trailing = if input.peek(Token![,]) {
             input.parse::<Token![,]>()?;
             if input.peek(syn::Ident) {
-                let ident: syn::Ident = input.parse()?;
+                let ident: Ident = input.parse()?;
                 if ident == "trailing" {
                     true
                 } else {
@@ -494,7 +494,8 @@ impl FieldMetadata {
         let mut body = TokenStream::new();
 
         for rule in &self.attrs.prefix {
-            rule.generate_parser(&mut body, *commit)
+            rule.generate_parser(&mut body, *commit);
+            body.append_all(quote!(?;));
         }
 
         let cty = &self.concrete_ty;
@@ -503,7 +504,124 @@ impl FieldMetadata {
         body.append_all(match self.ty {
             FieldType::VecNode => {
                 // one_or_more?, sep?
-                quote! { todo!("VecNode") }
+                if let Some(sep) = &self.attrs.sep {
+                    let tk = &sep.token;
+
+                    let node_parse = if sep.trailing {
+                        quote! {
+                            match #cty::#parse(tokens, invalid_pass) {
+                                Result::Ok(Some(n)) => nodes.push(n),
+                                Result::Ok(None) => break,
+                                Result::Err(e) => {
+                                    tokens.restore();
+                                    return Err(e)
+                                }
+                            }
+                        }
+                    } else {
+                        quote! {
+                            match #cty::#parse(tokens, invalid_pass) {
+                                Result::Ok(Some(n)) => nodes.push(n),
+                                Result::Ok(None) => {
+                                    tokens.restore();
+                                    return Err(anyhow!("Trailing {} not allowed", stringify!(#tk)))
+                                },
+                                Result::Err(e) => {
+                                    tokens.restore();
+                                    return Err(e)
+                                }
+                            }
+                        }
+                    };
+
+                    quote! {
+                        let mut nodes = Vec::new();
+                        tokens.snapshot();
+                        match #cty::#parse(tokens, invalid_pass) {
+                            Result::Ok(Some(n)) => nodes.push(n),
+                            Result::Ok(None) => {
+                                tokens.restore();
+                                return Err(anyhow!("At least one instance of {} is required", stringify!(#cty)))
+                            },
+                            Result::Err(e) => {
+                                tokens.restore();
+                                return Err(e)
+                            }
+                        }
+                        loop {
+                            if let Some(tk) = tokens.get(0) {
+                                if matches!(&tk.value, #tk) {
+                                    tokens.consume_next();
+                                } else {
+                                    break
+                                }
+                            } else {
+                                break
+                            }
+
+                            #node_parse
+                        }
+                        tokens.discard_snapshot();
+                        Ok(Some(nodes))
+                    }
+                } else if self.attrs.one_or_more {
+
+                    let else_behavior = if *commit {
+                        quote! {
+                            return Err(anyhow!("At least one instance of {} is required", stringify!(#cty)))
+                        }
+                    } else {
+                        quote! {
+                            return Ok(None)
+                        }
+                    };
+
+                    quote! {
+                        let mut nodes = Vec::new();
+                        tokens.snapshot();
+                        match #cty::#parse(tokens, invalid_pass) {
+                            Result::Ok(Some(n)) => nodes.push(n),
+                            Result::Ok(None) => {
+                                tokens.restore();
+                                #else_behavior
+                            },
+                            Result::Err(e) => {
+                                tokens.restore();
+                                return Err(e)
+                            }
+                        }
+                        loop {
+                            match #cty::#parse(tokens, invalid_pass) {
+                                Result::Ok(Some(n)) => nodes.push(n),
+                                Result::Ok(None) => break,
+                                Result::Err(e) => {
+                                    tokens.restore();
+                                    return Err(e)
+                                }
+                            }
+                        }
+                        tokens.discard_snapshot();
+                        Ok(Some(nodes))
+                    }
+                } else {
+
+                    quote! {
+                        let mut nodes = Vec::new();
+                        tokens.snapshot();
+                        loop {
+                            match #cty::#parse(tokens, invalid_pass) {
+                                Result::Ok(Some(n)) => nodes.push(n),
+                                Result::Ok(None) => break,
+                                Result::Err(e) => {
+                                    tokens.restore();
+                                    return Err(e)
+                                }
+                            }
+                        }
+                        tokens.discard_snapshot();
+                        Ok(Some(nodes))
+                    }
+                }
             }
             FieldType::BoxNode => {
                 if *commit {
@@ -543,8 +661,128 @@ impl FieldMetadata {
                 }
             }
             FieldType::VecToken => {
-                // one_or_more?, sep?, token|pattern
-                quote! { todo!("VecToken") }
+                // one_or_more?, sep?, token
+
+                let token = match &self.attrs.token {
+                    Some(TokenCheck::Token(t)) => t,
+                    _ => unreachable!()
+                };
+
+                if let Some(sep) = &self.attrs.sep {
+                    let tk = &sep.token;
+
+                    let (else_behavior, eof) = if *commit {
+                        (
+                            quote! {
+                                return Err(anyhow!("Expected at least one {}", stringify!(#token)))
+                            },
+                            quote! {
+                                return Err(anyhow!("Expected {}, got EOF", stringify!(#token)))
+                            }
+                        )
+                    } else {
+                        (quote!(return Ok(None)), quote!(return Ok(None)))
+                    };
+
+                    let trail = if sep.trailing {
+                        quote!(break;)
+                    } else {
+                        quote! {
+                            return Err(anyhow!("Trailing {} not allowed", stringify!(#tk)))
+                        }
+                    };
+
+                    quote! {
+                        let mut toks = Vec::new();
+                        if let Some(tk) = tokens.get(0) {
+                            if matches!(&tk.value, #token) {
+                                toks.push(tokens.consume_next().unwrap().clone())
+                            } else {
+                                #else_behavior
+                            }
+                        } else {
+                            #eof
+                        }
+                        loop {
+                            if let Some(tk) = tokens.get(0) {
+                                if matches!(&tk.value, #tk) {
+                                    tokens.consume_next();
+                                } else {
+                                    break;
+                                }
+                            } else {
+                                break;
+                            }
+
+                            if let Some(tk) = tokens.get(0) {
+                                if matches!(&tk.value, #token) {
+                                    toks.push(tokens.consume_next().unwrap().clone())
+                                } else {
+                                    #trail
+                                }
+                            } else {
+                                #trail
+                            }
+                        }
+                        Ok(Some(toks))
+                    }
+                } else if self.attrs.one_or_more {
+
+                    let (else_behavior, eof) = if *commit {
+                        (
+                            quote! {
+                                return Err(anyhow!("Expected at least one {}", stringify!(#token)))
+                            },
+                            quote! {
+                                return Err(anyhow!("Expected {}, got EOF", stringify!(#token)))
+                            }
+                        )
+                    } else {
+                        (quote!(return Ok(None)), quote!(return Ok(None)))
+                    };
+
+                    quote! {
+                        let mut toks = Vec::new();
+                        if let Some(tk) = tokens.get(0) {
+                            if matches!(&tk.value, #token) {
+                                toks.push(tokens.consume_next().unwrap().clone())
+                            } else {
+                                #else_behavior
+                            }
+                        } else {
+                            #eof
+                        }
+                        loop {
+                            if let Some(tk) = tokens.get(0) {
+                                if matches!(&tk.value, #token) {
+                                    toks.push(tokens.consume_next().unwrap().clone())
+                                } else {
+                                    break;
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+                        Ok(Some(toks))
+                    }
+                } else {
+
+                    quote! {
+                        let mut toks = Vec::new();
+                        loop {
+                            if let Some(tk) = tokens.get(0) {
+                                if matches!(&tk.value, #token) {
+                                    toks.push(tokens.consume_next().unwrap().clone())
+                                } else {
+                                    break;
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+                        Ok(Some(toks))
+                    }
+                }
             }
             FieldType::OptionToken => {
                 // token
@@ -552,7 +790,7 @@ impl FieldMetadata {
                     TokenCheck::Token(t) => {
                         quote! {
                             if let Some(tk) = tokens.get(0) {
-                                if matches!(tk.value, #t) {
+                                if matches!(&tk.value, #t) {
                                     Ok(Some(Some(tokens.consume_next().unwrap().clone())))
                                 } else {
                                     Ok(Some(None))
@@ -583,7 +821,7 @@ impl FieldMetadata {
 
                         quote! {
                             if let Some(tk) = tokens.get(0) {
-                                if matches!(tk.value, #t) {
+                                if matches!(&tk.value, #t) {
                                     Ok(Some(tokens.consume_next().unwrap().clone()))
                                 } else {
                                     #a
@@ -603,35 +841,97 @@ impl FieldMetadata {
 
                     quote! {
                         if let Some(tk) = tokens.get(0) {
-                            if matches!(tk.value, #t) {
+                            if matches!(&tk.value, #t) {
                                 tokens.consume_next();
                             }
                         }
+                        Ok(Some(()))
                     }
                 } else {
 
-                    quote! {
+                    let mut checks = TokenStream::new();
+                    for check in &self.attrs.pattern {
+                        check.generate_parser(&mut checks, false);
+                    }
 
+                    quote! {
+                        (|| {
+                            tokens.snapshot()
+                            #checks
+                            tokens.discard_snapshot();
+                        })();
                     }
                 }
             }
             FieldType::Unit => {
                 // token|fail_if|pass_if|pattern
-                quote! { todo!("Unit") }
+                if let Some(check) = &self.attrs.token {
+
+                    let mut out = TokenStream::new();
+                    check.generate_parser(&mut out, *commit);
+                    out
+
+                } else {
+                    let mut checks = TokenStream::new();
+                    for check in &self.attrs.pattern {
+                        check.generate_parser(&mut checks, false);
+                    }
+
+                    quote! {
+                        (|| {
+                            tokens.snapshot()
+                            #checks
+                            tokens.discard_snapshot();
+                        })();
+                    }
+                }
             }
             FieldType::Bool => {
                 // token|pattern
-                quote! { todo!("Bool") }
+                if let Some(TokenCheck::Token(t)) = &self.attrs.token {
+
+                    quote! {
+                        if let Some(tk) = tokens.get(0) {
+                            if matches!(&tk.value, #t) {
+                                tokens.consume_next();
+                                Ok(Some(true))
+                            } else {
+                                Ok(Some(false))
+                            }
+                        } else {
+                            Ok(Some(false))
+                        }
+                    }
+                } else {
+
+                    let mut checks = TokenStream::new();
+                    for check in &self.attrs.pattern {
+                        check.generate_parser(&mut checks, false);
+                    }
+
+                    quote! {
+                        match (|| {
+                            tokens.snapshot()
+                            #checks
+                            tokens.discard_snapshot();
+                        })() {
+                            Result::Ok(Some(_)) => Ok(true),
+                            Result::Ok(None) => Ok(false),
+                            Result::Err(e) => Err(e)
+                        }
+                    }
+                }
             }
         });
 
         for rule in &self.attrs.postfix {
-            rule.generate_parser(&mut body, *commit)
+            rule.generate_parser(&mut body, *commit);
+            body.append_all(quote!(?;));
         }
 
         if self.attrs.skip {
             unpack.append_all(quote! {
-                match (|| -> Result<Option<_>> { #body })() {
+                match (|| { #body })() {
                     Result::Ok(Some(_)) => {
 
                     }
@@ -647,7 +947,7 @@ impl FieldMetadata {
             })
         } else {
             unpack.append_all(quote! {
-                let #name = match (|| -> Result<Option<_>> { #body })() {
+                let #name = match (|| { #body })() {
                     Result::Ok(Some(s)) => {
                         s
                     }
@@ -668,7 +968,97 @@ impl FieldMetadata {
 
 impl TokenCheck {
     fn generate_parser(&self, tokens: &mut TokenStream, commit: bool) {
-        todo!()
+        tokens.append_all(match self {
+            Self::Token(t) => {
+                if commit {
+
+                    quote! {
+                        if let Some(tk) = tokens.get(0) {
+                            if matches!(&tk.value, #t) {
+                                Ok(Some(tokens.consume_next().unwrap().clone()))
+                            } else {
+                                return Err(anyhow!("token didn't match"))
+                            }
+                        } else {
+                            tokens.restore();
+                            return Err(anyhow!("Unexpected EOF while parsing token"))
+                        }
+                    }
+                } else {
+
+                    quote! {
+                        if let Some(tk) = tokens.get(0) {
+                            if matches!(&tk.value, #t) {
+                                Ok(Some(tokens.consume_next().unwrap().clone()))
+                            } else {
+                                return Ok(None)
+                            }
+                        } else {
+                            tokens.restore();
+                            return Ok(None)
+                        }
+                    }
+                }
+            }
+            Self::PassIf(p) => {
+                if commit {
+
+                    quote! {
+                        if let Some(tk) = tokens.get(0) {
+                            if matches!(&tk.value, #p) {
+                                Ok(Some(true))
+                            } else {
+                                return Err(anyhow!("token didn't match"))
+                            }
+                        } else {
+                            return Err(anyhow!("Unexpected EOF while parsing token"))
+                        }
+                    }
+                } else {
+
+                    quote! {
+                        if let Some(tk) = tokens.get(0) {
+                            if matches!(&tk.value, #p) {
+                                Ok(Some(()))
+                            } else {
+                                return Ok(None)
+                            }
+                        } else {
+                            return Ok(None)
+                        }
+                    }
+                }
+            }
+            Self::FailIf(f) => {
+                if commit {
+
+                    quote! {
+                        if let Some(tk) = tokens.get(0) {
+                            if matches!(&tk.value, #f) {
+                                return Err(anyhow!("token matched"))
+                            } else {
+                                Ok(Some(()))
+                            }
+                        } else {
+                            Ok(Some(()))
+                        }
+                    }
+                } else {
+
+                    quote! {
+                        if let Some(tk) = tokens.get(0) {
+                            if matches!(&tk.value, #f) {
+                                return Ok(None)
+                            } else {
+                                Ok(Some(()))
+                            }
+                        } else {
+                            Ok(Some(()))
+                        }
+                    }
+                }
+            }
+        })
     }
 }
 

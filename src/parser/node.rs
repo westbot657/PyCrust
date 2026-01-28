@@ -762,15 +762,94 @@ pub struct FinallyBlockNode(#[token(TokenValue::Keyword(Keyword::Finally))] pub 
 
 #[node]
 pub struct MatchStmtNode {
-    #[token(TokenValue::Word(w) if w == "match")]
-    pub token: Token,
-    pub subject: SubjectExprNode,
+    // #[token(TokenValue::Word(w) if w == "match")]
+    // pub token: Token,
+    // pub subject: SubjectExprNode,
     #[pattern(token(TokenValue::Symbol(Symbol::Colon)), token(TokenValue::Newline), token(TokenValue::Indent))]
     skip: (),
-    #[one_or_more]
-    pub cases: Vec<CaseBlockNode>,
+    // #[one_or_more]
+    // pub cases: Vec<CaseBlockNode>,
     #[token(TokenValue::Dedent)]
     de: (),
+}
+impl Node for MatchStmtNode {
+    // #[token(TokenValue::Word(w) if w == "match")]
+    // pub token: Token,
+    // pub subject: SubjectExprNode,
+    fn parse(tokens: &mut ParseTokens, invalid_pass: bool) -> Result<Option<Self>> {
+        tokens.snapshot();
+        match (|| {
+            (|| -> Result<Option<_>> {
+                tokens.snapshot();
+                if let Some(tk) = tokens.get(0) {
+                    if
+                    match (&tk.value) {
+                        TokenValue::Symbol(Symbol::Colon) => true,
+                        _ => false
+                    } { Ok(Some(tokens.consume_next().unwrap().clone())) } else { return Ok(None); }
+                } else {
+                    tokens.restore();
+                    return Ok(None);
+                }
+                if let Some(tk) = tokens.get(0) {
+                    if
+                    match (&tk.value) {
+                        TokenValue::Newline => true,
+                        _ => false
+                    } { Ok(Some(tokens.consume_next().unwrap().clone())) } else { return Ok(None); }
+                } else {
+                    tokens.restore();
+                    return Ok(None);
+                }
+                if let Some(tk) = tokens.get(0) {
+                    if
+                    match (&tk.value) {
+                        TokenValue::Indent => true,
+                        _ => false
+                    } { Ok(Some(tokens.consume_next().unwrap().clone())) } else { return Ok(None); }
+                } else {
+                    tokens.restore();
+                    return Ok(None);
+                }
+                tokens.discard_snapshot();
+                Ok(Some(()))
+            })()
+        })() {
+            Result::Ok(Some(_)) => {}
+            Result::Ok(None) => {
+                tokens.restore();
+                return Ok(None);
+            }
+            Result::Err(e) => {
+                tokens.restore();
+                return Err(e);
+            }
+        }
+        match (|| {
+            if let Some(tk) = tokens.get(0) {
+                if #[allow(non_exhaustive_omitted_patterns)]
+                match (&tk.value) {
+                    TokenValue::Dedent => true,
+                    _ => false
+                } { Ok(Some(tokens.consume_next().unwrap().clone())) } else { return Ok(None); }
+            } else {
+                tokens.restore();
+                return Ok(None);
+            }
+        })() {
+            Result::Ok(Some(_)) => {}
+            Result::Ok(None) => {
+                tokens.restore();
+                return Ok(None);
+            }
+            Result::Err(e) => {
+                tokens.restore();
+                return Err(e);
+            }
+        }
+        tokens.discard_snapshot();
+        Ok(Some(Self {}))
+    }
 }
 
 #[node]
