@@ -310,18 +310,22 @@ pub enum DottedNameNode {
 }
 impl Node for DottedNameNode {
     fn parse(tokens: &mut ParseTokens, _: bool) -> Result<Option<Self>> {
+        tokens.snapshot();
         let name_tk = if let Some(tk) = tokens.get(0) {
             if matches!(tk.value, TokenValue::Word(_)) {
-                let Some(tk) = tokens.consume_next() else { unreachable!() };
-                tk.clone()
+                tokens.consume_next().unwrap().clone()
             } else {
+                tokens.restore();
                 return Ok(None)
             }
         } else {
+            tokens.restore();
             return Ok(None)
         };
         let mut a = Self::Name(name_tk);
         loop {
+            tokens.discard_snapshot();
+            tokens.snapshot();
             if let Some(tk) = tokens.get(0) {
                 if !matches!(tk.value, TokenValue::Symbol(Symbol::Dot)) {
                     break
@@ -329,12 +333,13 @@ impl Node for DottedNameNode {
                 tokens.consume_next();
                 let name_tk = if let Some(tk) = tokens.get(0) {
                     if matches!(tk.value, TokenValue::Word(_)) {
-                        let Some(tk) = tokens.consume_next() else { unreachable!() };
-                        tk.clone()
+                        tokens.consume_next().unwrap().clone()
                     } else {
+                        tokens.restore();
                         return Ok(None)
                     }
                 } else {
+                    tokens.restore();
                     return Ok(None)
                 };
                 a = Self::Attr { parent: Box::new(a), name: name_tk }
@@ -342,6 +347,7 @@ impl Node for DottedNameNode {
                 break
             }
         }
+        tokens.discard_snapshot();
         Ok(Some(a))
     }
 }
@@ -989,6 +995,8 @@ impl Node for AttrNode {
         let mut a = NameOrAttrNode::Name(tk);
 
         loop {
+            tokens.discard_snapshot();
+            tokens.snapshot();
             if if let Some(tk) = tokens.get(0) {
                 matches!(tk.value, TokenValue::Symbol(Symbol::Dot))
             } else { false } {
@@ -998,14 +1006,15 @@ impl Node for AttrNode {
                         tokens.consume_next().unwrap().clone()
                     } else {
                         tokens.restore();
-                        return Ok(None)
+                        break;
                     }
                 } else {
                     tokens.restore();
-                    return Ok(None)
+                    break;
                 };
                 a = NameOrAttrNode::Attr(Box::new(Self { name_or_attr: a, name: tk }))
             } else {
+                tokens.restore();
                 break;
             }
         }
@@ -1492,8 +1501,8 @@ impl Node for PrimaryNode {
             return Ok(None);
         };
 
-        let mut p = PrimaryNode::Atom(atom);
         tokens.discard_snapshot();
+        let mut p = PrimaryNode::Atom(atom);
 
         loop {
             let Some(tk) = tokens.get(0) else {
@@ -2109,8 +2118,8 @@ impl Node for TPrimaryNode {
             return Ok(None)
         }
 
-        let mut a = Self::Atom(Box::new(atom));
         tokens.discard_snapshot();
+        let mut a = Self::Atom(Box::new(atom));
 
         loop {
             let tk = tokens.get(0).unwrap(); // unwrap cuz all branches end with t_lookahead which means this token will always exist
