@@ -534,6 +534,13 @@ impl FieldMetadata {
                         }
                     };
 
+                    let else_br = if *commit {
+                        quote!(return Err(anyhow!("At least one instance of {} is required", stringify!(#cty))))
+
+                    } else {
+                        quote!(return Ok(None))
+                    };
+
                     quote! {
                         let mut nodes = Vec::new();
                         tokens.snapshot();
@@ -541,7 +548,7 @@ impl FieldMetadata {
                             Result::Ok(Some(n)) => nodes.push(n),
                             Result::Ok(None) => {
                                 tokens.restore();
-                                return Err(anyhow!("At least one instance of {} is required", stringify!(#cty)))
+                                #else_br
                             },
                             Result::Err(e) => {
                                 tokens.restore();
@@ -875,14 +882,16 @@ impl FieldMetadata {
                     let mut checks = TokenStream::new();
                     for check in &self.attrs.pattern {
                         check.generate_parser(&mut checks, false);
+                        checks.append_all(quote!(?;));
                     }
 
                     quote! {
                         (|| {
-                            tokens.snapshot()
+                            tokens.snapshot();
                             #checks
                             tokens.discard_snapshot();
-                        })();
+                            Ok(Some(()))
+                        })()
                     }
                 }
             }

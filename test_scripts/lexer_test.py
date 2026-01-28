@@ -27,5 +27,5 @@ def main():
         print("x is 50")
 
 if __name__ == "__main__":
-    if true:
+    if True:
         main()

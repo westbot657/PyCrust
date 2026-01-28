@@ -9,7 +9,7 @@ where
 {
     fn parse_debug(tokens: &mut ParseTokens, invalid_pass: bool) -> Result<Option<Self>> {
         let x = Self::parse(tokens, invalid_pass)?;
-        println!("Parsed node {}: {x:#?}", std::any::type_name::<Self>());
+        // println!("Parsed node {}: {x:?}", std::any::type_name::<Self>());
         Ok(x)
     }
     fn parse(tokens: &mut ParseTokens, invalid_pass: bool) -> Result<Option<Self>>;
@@ -23,7 +23,12 @@ pub struct FileNode {
 }
 
 #[node]
-pub struct EvalNode(pub ExpressionsNode, #[token(TokenValue::Newline)] pub Vec<Token>, #[token(TokenValue::EndMarker)] ());
+pub struct EvalNode(
+    pub ExpressionsNode,
+    #[token(TokenValue::Newline)]
+    pub Vec<Token>,
+    #[token(TokenValue::EndMarker)] ()
+);
 
 // GENERAL STATEMENTS
 // ==================
@@ -32,13 +37,22 @@ pub struct EvalNode(pub ExpressionsNode, #[token(TokenValue::Newline)] pub Vec<T
 pub struct StatementsNode(#[one_or_more] pub Vec<StatementNode>);
 
 #[node]
-pub enum StatementNode {
+pub struct StatementNode(
+    pub StatementNodeInner,
+);
+
+#[node]
+pub enum StatementNodeInner {
     CompoundStatement(CompoundStmtNode),
     SimpleStatements(SimpleStmtsNode),
 }
 
 #[node]
-pub struct SimpleStmtsNode(#[one_or_more] #[sep(TokenValue::Symbol(Symbol::Semicolon), trailing)] pub Vec<SimpleStmtNode>);
+pub struct SimpleStmtsNode(
+    #[sep(TokenValue::Symbol(Symbol::Semicolon), trailing)]
+    pub Vec<SimpleStmtNode>,
+    #[token(TokenValue::Newline)] ()
+);
 
 #[node]
 pub enum SimpleStmtNode {
@@ -71,25 +85,29 @@ pub enum CompoundStmtNode {
 }
 
 #[node]
-pub struct AssignmentNodeValueInner(#[token(TokenValue::Symbol(Symbol::Assign))] (), pub AnnotatedRhsNode );
+pub struct AssignmentNodeValueInner(
+    #[token(TokenValue::Symbol(Symbol::Assign))] (),
+    pub AnnotatedRhsNode
+);
 
 #[node]
-pub struct AssignmentNodeChainedTargetsInner(pub StarTargetsNode, #[token(TokenValue::Symbol(Symbol::Assign))] ());
+pub struct AssignmentNodeChainedTargetsInner(
+    pub StarTargetsNode,
+    #[token(TokenValue::Symbol(Symbol::Assign))] ()
+);
 
 #[node]
 pub enum AssignmentNode {
     Typed {
         #[token(TokenValue::Word(_))]
         name: Token,
-        #[token(TokenValue::Symbol(Symbol::Colon))]
-        c: (),
+        #[prefix(token(TokenValue::Symbol(Symbol::Colon)))]
         annotation: ExpressionNode,
         value: Option<AssignmentNodeValueInner>
     },
     Unpacking {
         target: AssignmentNodeTarget,
-        #[token(TokenValue::Symbol(Symbol::Colon))]
-        c: (),
+        #[prefix(token(TokenValue::Symbol(Symbol::Colon)))]
         annotation: ExpressionNode,
         value: Option<AssignmentNodeValueInner>
     },
@@ -111,7 +129,11 @@ pub enum AssignmentNode {
 
 #[node]
 pub enum AssignmentNodeTarget {
-    SingleTarget(#[token(TokenValue::Symbol(Symbol::LParen))] (), SingleTargetNode, #[token(TokenValue::Symbol(Symbol::RParen))] ()),
+    SingleTarget(
+        #[token(TokenValue::Symbol(Symbol::LParen))] (),
+        SingleTargetNode,
+        #[token(TokenValue::Symbol(Symbol::RParen))] ()
+    ),
     SingleSubscriptAttributeTarget(SingleSubscriptAttributeTargetNode),
 }
 
@@ -130,7 +152,10 @@ pub struct ReturnStmtNode {
 
 
 #[node]
-pub struct RaiseStmtNodeFromInner(#[token(TokenValue::Keyword(Keyword::From))] (), pub ExpressionNode);
+pub struct RaiseStmtNodeFromInner(
+    #[token(TokenValue::Keyword(Keyword::From))] (),
+    pub ExpressionNode
+);
 
 #[node]
 pub enum RaiseStmtNode {
@@ -157,7 +182,6 @@ pub struct ContinueStmtNode(#[token(TokenValue::Keyword(Keyword::Continue))] pub
 pub struct GlobalStmtNode {
     #[token(TokenValue::Keyword(Keyword::Global))]
     pub token: Token,
-    #[one_or_more]
     #[sep(TokenValue::Symbol(Symbol::Comma))]
     #[token(TokenValue::Word(_))]
     pub names: Vec<Token>,
@@ -168,7 +192,6 @@ pub struct GlobalStmtNode {
 pub struct NonlocalStmtNode {
     #[token(TokenValue::Keyword(Keyword::Nonlocal))]
     pub token: Token,
-    #[one_or_more]
     #[sep(TokenValue::Symbol(Symbol::Comma))]
     #[token(TokenValue::Word(_))]
     pub names: Vec<Token>,
@@ -187,7 +210,10 @@ pub struct DelStmtNode {
 pub struct YieldStmtNode(pub YieldExprNode);
 
 #[node]
-pub struct AssertStmtNodeErrorInner(#[token(TokenValue::Symbol(Symbol::Comma))] (), pub ExpressionNode);
+pub struct AssertStmtNodeErrorInner(
+    #[token(TokenValue::Symbol(Symbol::Comma))] (),
+    pub ExpressionNode
+);
 
 #[node]
 pub struct AssertStmtNode {
@@ -246,7 +272,6 @@ pub enum ImportFromTargetsNode {
 
 #[node]
 pub struct ImportFromAsNamesNode {
-    #[one_or_more]
     #[sep(TokenValue::Symbol(Symbol::Comma))]
     pub names: Vec<ImportFromAsNameNode>,
 }
@@ -263,7 +288,6 @@ pub struct ImportFromAsNameNode {
 
 #[node]
 pub struct DottedAsNamesNode {
-    #[one_or_more]
     #[sep(TokenValue::Symbol(Symbol::Comma))]
     pub names: Vec<DottedAsNameNode>,
 }
@@ -325,7 +349,12 @@ impl Node for DottedNameNode {
 
 #[node]
 pub enum BlockNode {
-    Statements(#[token(TokenValue::Newline)] (), #[token(TokenValue::Indent)] (), StatementsNode, #[token(TokenValue::Dedent)] ()),
+    Statements(
+        #[token(TokenValue::Newline)] (),
+        #[token(TokenValue::Indent)] (),
+        StatementsNode,
+        #[token(TokenValue::Dedent)] ()
+    ),
     Simple(SimpleStmtsNode),
 }
 
@@ -354,7 +383,11 @@ pub struct ClassDefNode {
 }
 
 #[node]
-pub struct ClassDefRawNodeArgumentsInner(#[token(TokenValue::Symbol(Symbol::LParen))] (), pub Option<ArgumentsNode>, #[token(TokenValue::Symbol(Symbol::RParen))] ());
+pub struct ClassDefRawNodeArgumentsInner(
+    #[token(TokenValue::Symbol(Symbol::LParen))] (),
+    pub Option<ArgumentsNode>,
+    #[token(TokenValue::Symbol(Symbol::RParen))] ()
+);
 
 #[node]
 pub struct ClassDefRawNode {
@@ -379,7 +412,10 @@ pub struct FunctionDefNode {
 }
 
 #[node]
-pub struct FunctionDefRawNodeReturnInner(#[token(TokenValue::Symbol(Symbol::Arrow))] (), pub ExpressionNode);
+pub struct FunctionDefRawNodeReturnInner(
+    #[token(TokenValue::Symbol(Symbol::Arrow))] (),
+    pub ExpressionNode
+);
 
 #[node]
 pub struct FunctionDefRawNode {
@@ -490,14 +526,16 @@ pub struct KwdsNode {
 }
 
 #[node]
-pub struct ParamNoDefaultNode(pub ParamNode, pub CommaOrRParenNext);
+pub struct ParamNoDefaultNode(pub ParamNode, #[skip] CommaOrRParenNext);
+
 #[node]
-pub struct ParamNoDefaultStarAnnotationNode(pub ParamStarAnnotationNode, pub CommaOrRParenNext);
+pub struct ParamNoDefaultStarAnnotationNode(pub ParamStarAnnotationNode, #[skip] CommaOrRParenNext);
 
 #[node]
 pub struct ParamWithDefaultNode {
     pub param: ParamNode,
     pub default: DefaultNode,
+    #[skip]
     _c: CommaOrRParenNext,
 }
 
@@ -505,6 +543,7 @@ pub struct ParamWithDefaultNode {
 pub struct ParamMaybeDefaultNode {
     pub param: ParamNode,
     pub default: Option<DefaultNode>,
+    #[skip]
     _c: CommaOrRParenNext,
 }
 
@@ -536,8 +575,9 @@ pub struct StarAnnotationNode {
 
 #[node]
 pub struct DefaultNode {
+    #[prefix(token(TokenValue::Symbol(Symbol::Assign)))]
     pub expr: ExpressionNode,
-    // | invalid_default // for some reason this rule's definition isn't included in python's grammar rules...
+    // | invalid_default
 }
 
 // If statement
@@ -602,6 +642,7 @@ pub struct ForStmtNode {
     pub targets: StarTargetsNode,
     #[token(TokenValue::Keyword(Keyword::In))]
     pub in_token: Token,
+    #[commit]
     pub star_expr: StarExpressionsNode,
     #[prefix(token(TokenValue::Symbol(Symbol::Colon)))]
     pub block: BlockNode,
@@ -616,13 +657,15 @@ pub enum WithItemsInner {
     Parenthesized(
         #[token(TokenValue::Symbol(Symbol::LParen))]
         (),
-        #[one_or_more]
         #[sep(TokenValue::Symbol(Symbol::Comma), trailing)]
         Vec<WithItemNode>,
         #[token(TokenValue::Symbol(Symbol::RParen))]
         ()
     ),
-    Open(#[one_or_more] Vec<WithItemNode>)
+    Open(
+        #[sep(TokenValue::Symbol(Symbol::Comma))]
+        Vec<WithItemNode>
+    )
 }
 
 #[node]
@@ -755,106 +798,36 @@ pub enum ExceptStarBlockNode {
 }
 
 #[node]
-pub struct FinallyBlockNode(#[token(TokenValue::Keyword(Keyword::Finally))] pub Token, #[prefix(token(TokenValue::Symbol(Symbol::Colon)))] pub BlockNode);
+pub struct FinallyBlockNode(
+    #[token(TokenValue::Keyword(Keyword::Finally))]
+    pub Token,
+    #[prefix(token(TokenValue::Symbol(Symbol::Colon)))]
+    pub BlockNode
+);
 
 // Match statement
 // ---------------
 
 #[node]
 pub struct MatchStmtNode {
-    // #[token(TokenValue::Word(w) if w == "match")]
-    // pub token: Token,
-    // pub subject: SubjectExprNode,
+    #[token(TokenValue::Word(w) if w == "match")]
+    pub token: Token,
+    pub subject: SubjectExprNode,
     #[pattern(token(TokenValue::Symbol(Symbol::Colon)), token(TokenValue::Newline), token(TokenValue::Indent))]
     skip: (),
-    // #[one_or_more]
-    // pub cases: Vec<CaseBlockNode>,
+    #[one_or_more]
+    pub cases: Vec<CaseBlockNode>,
     #[token(TokenValue::Dedent)]
     de: (),
-}
-impl Node for MatchStmtNode {
-    // #[token(TokenValue::Word(w) if w == "match")]
-    // pub token: Token,
-    // pub subject: SubjectExprNode,
-    fn parse(tokens: &mut ParseTokens, invalid_pass: bool) -> Result<Option<Self>> {
-        tokens.snapshot();
-        match (|| {
-            (|| -> Result<Option<_>> {
-                tokens.snapshot();
-                if let Some(tk) = tokens.get(0) {
-                    if
-                    match (&tk.value) {
-                        TokenValue::Symbol(Symbol::Colon) => true,
-                        _ => false
-                    } { Ok(Some(tokens.consume_next().unwrap().clone())) } else { return Ok(None); }
-                } else {
-                    tokens.restore();
-                    return Ok(None);
-                }
-                if let Some(tk) = tokens.get(0) {
-                    if
-                    match (&tk.value) {
-                        TokenValue::Newline => true,
-                        _ => false
-                    } { Ok(Some(tokens.consume_next().unwrap().clone())) } else { return Ok(None); }
-                } else {
-                    tokens.restore();
-                    return Ok(None);
-                }
-                if let Some(tk) = tokens.get(0) {
-                    if
-                    match (&tk.value) {
-                        TokenValue::Indent => true,
-                        _ => false
-                    } { Ok(Some(tokens.consume_next().unwrap().clone())) } else { return Ok(None); }
-                } else {
-                    tokens.restore();
-                    return Ok(None);
-                }
-                tokens.discard_snapshot();
-                Ok(Some(()))
-            })()
-        })() {
-            Result::Ok(Some(_)) => {}
-            Result::Ok(None) => {
-                tokens.restore();
-                return Ok(None);
-            }
-            Result::Err(e) => {
-                tokens.restore();
-                return Err(e);
-            }
-        }
-        match (|| {
-            if let Some(tk) = tokens.get(0) {
-                if #[allow(non_exhaustive_omitted_patterns)]
-                match (&tk.value) {
-                    TokenValue::Dedent => true,
-                    _ => false
-                } { Ok(Some(tokens.consume_next().unwrap().clone())) } else { return Ok(None); }
-            } else {
-                tokens.restore();
-                return Ok(None);
-            }
-        })() {
-            Result::Ok(Some(_)) => {}
-            Result::Ok(None) => {
-                tokens.restore();
-                return Ok(None);
-            }
-            Result::Err(e) => {
-                tokens.restore();
-                return Err(e);
-            }
-        }
-        tokens.discard_snapshot();
-        Ok(Some(Self {}))
-    }
 }
 
 #[node]
 pub enum SubjectExprNode {
-    StarExpr(StarNamedExpressionNode, #[token(TokenValue::Symbol(Symbol::Comma))] (), Option<StarNamedExpressionsNode> ),
+    StarExpr(
+        StarNamedExpressionNode,
+        #[token(TokenValue::Symbol(Symbol::Comma))] (),
+        Option<StarNamedExpressionsNode>
+    ),
     Expr(NamedExpressionNode)
 }
 
@@ -882,7 +855,10 @@ pub enum PatternsNode {
 }
 
 #[node]
-pub struct PatternNodeAliasInner(#[token(TokenValue::Keyword(Keyword::As))] (), pub PatternCaptureTargetNode);
+pub struct PatternNodeAliasInner(
+    #[token(TokenValue::Keyword(Keyword::As))] (),
+    pub PatternCaptureTargetNode
+);
 
 #[node]
 pub struct PatternNode {
@@ -892,7 +868,6 @@ pub struct PatternNode {
 
 #[node]
 pub struct OrPatternNode {
-    #[one_or_more]
     #[sep(TokenValue::Operator(Operator::BitOr))]
     pub patterns: Vec<ClosedPatternNode>,
 }
@@ -911,7 +886,10 @@ pub enum ClosedPatternNode {
 
 #[node]
 pub enum LiteralPatternNode {
-    SignedNumber(SignedNumberNode, #[fail_if(TokenValue::Operator(Operator::Add | Operator::Sub))] ()),
+    SignedNumber(
+        SignedNumberNode,
+        #[fail_if(TokenValue::Operator(Operator::Add | Operator::Sub))] ()
+    ),
     ComplexNumber(ComplexNumberNode),
     Strings(StringsNode),
     None(#[token(TokenValue::None)] Token),
@@ -921,7 +899,10 @@ pub enum LiteralPatternNode {
 
 #[node]
 pub enum LiteralExprNode {
-    SignedNumber(SignedNumberNode, #[fail_if(TokenValue::Operator(Operator::Add | Operator::Sub))] ()),
+    SignedNumber(
+        SignedNumberNode,
+        #[fail_if(TokenValue::Operator(Operator::Add | Operator::Sub))] ()
+    ),
     ComplexNumber(ComplexNumberNode),
     Strings(StringsNode),
     None(#[token(TokenValue::None)] Token),
@@ -1045,12 +1026,24 @@ pub enum NameOrAttrNode {
 }
 
 #[node]
-pub struct GroupPatternNode(#[token(TokenValue::Symbol(Symbol::LParen))] (), pub PatternNode, #[token(TokenValue::Symbol(Symbol::RParen))] ());
+pub struct GroupPatternNode(
+    #[token(TokenValue::Symbol(Symbol::LParen))] (),
+    pub PatternNode,
+    #[token(TokenValue::Symbol(Symbol::RParen))] ()
+);
 
 #[node]
 pub enum SequencePatternNode {
-    Maybe(#[token(TokenValue::Symbol(Symbol::LBracket))] (), Option<MaybeSequencePatternNode>, #[token(TokenValue::Symbol(Symbol::RBracket))] ()),
-    Open(#[token(TokenValue::Symbol(Symbol::LParen))] (), Option<OpenSequencePatternNode>, #[token(TokenValue::Symbol(Symbol::RParen))] ()),
+    Maybe(
+        #[token(TokenValue::Symbol(Symbol::LBracket))] (),
+        Option<MaybeSequencePatternNode>,
+        #[token(TokenValue::Symbol(Symbol::RBracket))] ()
+    ),
+    Open(
+        #[token(TokenValue::Symbol(Symbol::LParen))] (),
+        Option<OpenSequencePatternNode>,
+        #[token(TokenValue::Symbol(Symbol::RParen))] ()
+    ),
 }
 
 #[node]
@@ -1063,7 +1056,6 @@ pub struct OpenSequencePatternNode {
 
 #[node]
 pub struct MaybeSequencePatternNode {
-    #[one_or_more]
     #[sep(TokenValue::Symbol(Symbol::Comma), trailing)]
     pub patterns: Vec<MaybeStarPatternNode>,
 }
@@ -1110,7 +1102,6 @@ pub enum MappingPatternNode {
 
 #[node]
 pub struct ItemsPatternNode {
-    #[one_or_more]
     #[sep(TokenValue::Symbol(Symbol::Comma))]
     pub key_value_patterns: Vec<KeyValuePatternNode>,
 }
@@ -1168,14 +1159,12 @@ pub enum ClassPatternNode {
 
 #[node]
 pub struct PositionalPatternsNode {
-    #[one_or_more]
     #[sep(TokenValue::Symbol(Symbol::Comma))]
     pub patterns: Vec<PatternNode>,
 }
 
 #[node]
 pub struct KeywordPatternsNode {
-    #[one_or_more]
     #[sep(TokenValue::Symbol(Symbol::Comma))]
     pub patterns: Vec<KeywordPatternNode>,
 }
@@ -1214,7 +1203,6 @@ pub struct TypeParamsNode(
 
 #[node]
 pub struct TypeParamSeqNode(
-    #[one_or_more]
     #[sep(TokenValue::Symbol(Symbol::Comma), trailing)]
     pub Vec<TypeParamNode>
 );
@@ -1255,7 +1243,6 @@ pub struct TypeParamStarredDefaultNode(#[prefix(token(TokenValue::Symbol(Symbol:
 
 #[node]
 pub struct ExpressionsNode {
-    #[one_or_more]
     #[sep(TokenValue::Symbol(Symbol::Comma), trailing)]
     pub expressions: Vec<ExpressionNode>,
 }
@@ -1293,7 +1280,6 @@ pub enum YieldExprNode {
 
 #[node]
 pub struct StarExpressionsNode(
-    #[one_or_more]
     #[sep(TokenValue::Symbol(Symbol::Comma), trailing)]
     pub Vec<StarExpressionNode>
 );
@@ -1306,7 +1292,6 @@ pub enum StarExpressionNode {
 
 #[node]
 pub struct StarNamedExpressionsNode(
-    #[one_or_more]
     #[sep(TokenValue::Symbol(Symbol::Comma), trailing)]
     pub Vec<StarNamedExpressionNode>
 );
@@ -1333,7 +1318,6 @@ pub enum NamedExpressionNode {
     Expr(ExpressionNode, #[fail_if(TokenValue::Symbol(Symbol::Walrus))] ()),
 }
 
-// TODO: debug
 #[node]
 pub struct DisjunctionNode {
     #[one_or_more]
@@ -1343,7 +1327,6 @@ pub struct DisjunctionNode {
 
 #[node]
 pub struct ConjunctionNode {
-    #[one_or_more]
     #[sep(TokenValue::Keyword(Keyword::And))]
     pub inversions: Vec<InversionNode>,
 }
@@ -1593,7 +1576,6 @@ pub enum SlicesNode {
         #[fail_if(TokenValue::Symbol(Symbol::Comma))] ()
     ),
     Multi(
-        #[one_or_more]
         #[sep(TokenValue::Symbol(Symbol::Comma), trailing)]
         Vec<SliceOrStarredExpr>
     ),
@@ -1808,7 +1790,6 @@ pub struct DictNode(
 
 #[node]
 pub struct DoubleStarredKVPairsNode(
-    #[one_or_more]
     #[sep(TokenValue::Symbol(Symbol::Comma), trailing)]
     pub Vec<DoubleStarredKVPairNode>
 );
@@ -1904,7 +1885,6 @@ pub struct ArgsNodeExprKwargsInner(#[token(TokenValue::Symbol(Symbol::Comma))] (
 #[node]
 pub enum ArgsNode {
     Expr(
-        #[one_or_more]
         #[sep(TokenValue::Symbol(Symbol::Comma))]
         Vec<ArgsNodeExprTargetsInner>,
         Option<ArgsNodeExprKwargsInner>
@@ -1921,21 +1901,17 @@ pub enum StarredOrNamedExpr {
 #[node]
 pub enum KwargsNode {
     Both(
-        #[one_or_more]
         #[sep(TokenValue::Symbol(Symbol::Comma))]
         Vec<KwargOrStarredNode>,
         #[token(TokenValue::Symbol(Symbol::Comma))] (),
-        #[one_or_more]
         #[sep(TokenValue::Symbol(Symbol::Comma))]
         Vec<KwargOrDoubleStarredNode>
     ),
     Starred(
-        #[one_or_more]
         #[sep(TokenValue::Symbol(Symbol::Comma))]
         Vec<KwargOrStarredNode>,
     ),
     DoubleStarred(
-        #[one_or_more]
         #[sep(TokenValue::Symbol(Symbol::Comma))]
         Vec<KwargOrDoubleStarredNode>
     ),
@@ -1977,14 +1953,12 @@ pub enum KwargOrDoubleStarredNode {
 
 #[node]
 pub struct StarTargetsNode(
-    #[one_or_more]
     #[sep(TokenValue::Symbol(Symbol::Comma), trailing)]
     pub Vec<StarTargetNode>
 );
 
 #[node]
 pub struct StarTargetsListSeq(
-    #[one_or_more]
     #[sep(TokenValue::Symbol(Symbol::Comma), trailing)]
     pub Vec<StarTargetNode>
 );
@@ -1993,7 +1967,6 @@ pub struct StarTargetsListSeq(
 pub enum StarTargetsTupleSeq {
     Multi(
         Box<StarTargetNode>,
-        #[one_or_more]
         #[sep(TokenValue::Symbol(Symbol::Comma), trailing)]
         Vec<StarTargetNode>
     ),
@@ -2213,7 +2186,6 @@ impl Node for TPrimaryNode {
 
 #[node]
 pub struct DelTargetsNode(
-    #[one_or_more]
     #[sep(TokenValue::Symbol(Symbol::Comma), trailing)]
     pub Vec<DelTargetNode>
 );

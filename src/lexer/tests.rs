@@ -47,11 +47,12 @@ pub fn test_parser() -> Result<()> {
 
     // let source = include_str!("../../test_scripts/lexer_test.py").to_string();
 
-    let source = "print(\"Hello, world!\")".to_string();
+    let source = "x = 7\n".to_string();
 
     let mut lexer = Lexer::new("<python-test>".to_string(), source);
 
     lexer.tokenize()?;
+    println!("output tokens: {}", lexer.get_tokens());
 
     let mut tokens = lexer.to_tokens().into_parse_tokens();
 
