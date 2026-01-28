@@ -9,7 +9,10 @@ where
 {
     fn parse_debug(tokens: &mut ParseTokens, invalid_pass: bool) -> Result<Option<Self>> {
         let x = Self::parse(tokens, invalid_pass)?;
-        // println!("Parsed node {}: {x:?}", std::any::type_name::<Self>());
+        let name = std::any::type_name::<Self>();
+        // if name == "pycrust::parser::node::StatementNode" {
+        //     println!("Parsed node {name}: {x:?}");
+        // }
         Ok(x)
     }
     fn parse(tokens: &mut ParseTokens, invalid_pass: bool) -> Result<Option<Self>>;
@@ -17,6 +20,8 @@ where
 
 #[node]
 pub struct FileNode {
+    #[token(TokenValue::Newline)]
+    newlines: Option<()>,
     pub statements: Option<StatementsNode>,
     #[token(TokenValue::EndMarker)]
     _end_marker: ()
@@ -1232,11 +1237,22 @@ pub enum TypeParamNode {
 }
 
 #[node]
-pub struct TypeParamBoundNode(#[prefix(token(TokenValue::Symbol(Symbol::Colon)))] pub ExpressionNode);
+pub struct TypeParamBoundNode(
+    #[prefix(token(TokenValue::Symbol(Symbol::Colon)))]
+    pub ExpressionNode
+);
+
 #[node]
-pub struct TypeParamDefaultNode(#[prefix(token(TokenValue::Symbol(Symbol::Assign)))] pub ExpressionNode);
+pub struct TypeParamDefaultNode(
+    #[prefix(token(TokenValue::Symbol(Symbol::Assign)))]
+    pub ExpressionNode
+);
+
 #[node]
-pub struct TypeParamStarredDefaultNode(#[prefix(token(TokenValue::Symbol(Symbol::Assign)))] pub StarExpressionNode);
+pub struct TypeParamStarredDefaultNode(
+    #[prefix(token(TokenValue::Symbol(Symbol::Assign)))]
+    pub StarExpressionNode
+);
 
 // EXPRESSIONS
 // ===========
@@ -1259,7 +1275,7 @@ pub enum ExpressionNode {
         falsey: Box<ExpressionNode>
     },
     Disjunction(DisjunctionNode),
-    Lambda(LambdaDefNode),
+    Lambda(Box<LambdaDefNode>),
 }
 
 #[node]
@@ -1298,7 +1314,7 @@ pub struct StarNamedExpressionsNode(
 
 #[node]
 pub enum StarNamedExpressionNode {
-    Starred(#[prefix(token(TokenValue::Operator(Operator::Mul)))] BitwiseOrNode),
+    Starred(#[prefix(token(TokenValue::Operator(Operator::Mul)))] Box<BitwiseOrNode>),
     Expr(NamedExpressionNode)
 }
 
@@ -1320,7 +1336,6 @@ pub enum NamedExpressionNode {
 
 #[node]
 pub struct DisjunctionNode {
-    #[one_or_more]
     #[sep(TokenValue::Keyword(Keyword::Or))]
     pub conjunctions: Vec<ConjunctionNode>,
 }
@@ -1342,33 +1357,33 @@ pub enum InversionNode {
 
 #[node]
 pub struct ComparisonNode {
-    pub bitwise_or: Box<BitwiseOrNode>,
+    pub bitwise_or: BitwiseOrNode,
     pub compare_pairs: Vec<CompareOpBitwiseOrPair>,
 }
 
 #[node]
 pub enum CompareOpBitwiseOrPair {
-    Eq(#[prefix(token(TokenValue::Comparator(Comparator::Eq)))] Box<BitwiseOrNode>),
-    Ne(#[prefix(token(TokenValue::Comparator(Comparator::Ne)))] Box<BitwiseOrNode>),
-    Le(#[prefix(token(TokenValue::Comparator(Comparator::Le)))] Box<BitwiseOrNode>),
-    Lt(#[prefix(token(TokenValue::Comparator(Comparator::Lt)))] Box<BitwiseOrNode>),
-    Ge(#[prefix(token(TokenValue::Comparator(Comparator::Ge)))] Box<BitwiseOrNode>),
-    Gt(#[prefix(token(TokenValue::Comparator(Comparator::Gt)))] Box<BitwiseOrNode>),
+    Eq(#[prefix(token(TokenValue::Comparator(Comparator::Eq)))] BitwiseOrNode),
+    Ne(#[prefix(token(TokenValue::Comparator(Comparator::Ne)))] BitwiseOrNode),
+    Le(#[prefix(token(TokenValue::Comparator(Comparator::Le)))] BitwiseOrNode),
+    Lt(#[prefix(token(TokenValue::Comparator(Comparator::Lt)))] BitwiseOrNode),
+    Ge(#[prefix(token(TokenValue::Comparator(Comparator::Ge)))] BitwiseOrNode),
+    Gt(#[prefix(token(TokenValue::Comparator(Comparator::Gt)))] BitwiseOrNode),
     NotIn(
         #[prefix(token(TokenValue::Keyword(Keyword::Not)), token(TokenValue::Keyword(Keyword::In)))]
-        Box<BitwiseOrNode>
+        BitwiseOrNode
     ),
     In(
         #[prefix(token(TokenValue::Keyword(Keyword::In)))]
-        Box<BitwiseOrNode>
+        BitwiseOrNode
     ),
     IsNot(
         #[prefix(token(TokenValue::Keyword(Keyword::Is)), token(TokenValue::Keyword(Keyword::Not)))]
-        Box<BitwiseOrNode>
+        BitwiseOrNode
     ),
     Is(
         #[prefix(token(TokenValue::Keyword(Keyword::Is)))]
-        Box<BitwiseOrNode>
+        BitwiseOrNode
     ),
 }
 
@@ -1623,10 +1638,17 @@ pub enum AtomNode {
 }
 
 #[node]
-pub enum GroupNode {
-    Yield(#[token(TokenValue::Symbol(Symbol::LParen))] (), YieldExprNode, #[token(TokenValue::Symbol(Symbol::RParen))] ()),
-    Named(#[token(TokenValue::Symbol(Symbol::LParen))] (), NamedExpressionNode, #[token(TokenValue::Symbol(Symbol::RParen))] ()),
+pub enum GroupNodeInner {
+    Yield(YieldExprNode),
+    Named(NamedExpressionNode),
 }
+
+#[node]
+pub struct GroupNode(
+    #[token(TokenValue::Symbol(Symbol::LParen))] (),
+    GroupNodeInner,
+    #[token(TokenValue::Symbol(Symbol::RParen))] (),
+);
 
 // Lambda functions
 // ----------------
@@ -1637,7 +1659,7 @@ pub struct LambdaDefNode {
     pub token: Token,
     pub params: Option<LambdaParamsNode>,
     #[prefix(token(TokenValue::Symbol(Symbol::Colon)))]
-    pub expr: Box<ExpressionNode>,
+    pub expr: ExpressionNode,
 }
 
 #[node]
@@ -1747,7 +1769,7 @@ pub struct LambdaParamNode {
 
 // LITERALS
 // ========
-#[node]
+#[node] // TODO: parse f-string internals
 pub struct StringsNode(#[token(TokenValue::StringLiteral(_))] pub Token);
 
 #[node]
@@ -1766,7 +1788,7 @@ pub struct TupleNode(
 
 #[node]
 pub struct TupleNodeInner(
-    pub Box<StarNamedExpressionNode>,
+    pub StarNamedExpressionNode,
     #[token(TokenValue::Symbol(Symbol::Comma))] (),
     pub Option<StarNamedExpressionsNode>
 );
@@ -1796,8 +1818,8 @@ pub struct DoubleStarredKVPairsNode(
 
 #[node]
 pub enum DoubleStarredKVPairNode {
-    Starred(#[prefix(token(TokenValue::Operator(Operator::Pow)))] Box<BitwiseOrNode>),
-    Pair(Box<KVPairNode>),
+    Starred(#[prefix(token(TokenValue::Operator(Operator::Pow)))] BitwiseOrNode),
+    Pair(KVPairNode),
 }
 
 #[node]
@@ -1838,32 +1860,36 @@ pub struct ForIfClauseNodeGuardsInner(
 pub struct ListCompNode {
     #[prefix(token(TokenValue::Symbol(Symbol::LBracket)))]
     pub named: NamedExpressionNode,
-    #[postfix(token(TokenValue::Symbol(Symbol::RBracket)))]
     pub clauses: ForIfClausesNode,
+    #[token(TokenValue::Symbol(Symbol::RBracket))]
+    r: (),
 }
 
 #[node]
 pub struct SetCompNode {
     #[prefix(token(TokenValue::Symbol(Symbol::LBrace)))]
     pub named: NamedExpressionNode,
-    #[postfix(token(TokenValue::Symbol(Symbol::RBrace)))]
     pub clauses: ForIfClausesNode,
+    #[token(TokenValue::Symbol(Symbol::RBrace))]
+    r: (),
 }
 
 #[node]
 pub struct GenexpNode {
     #[prefix(token(TokenValue::Symbol(Symbol::LParen)))]
     pub named: NamedExpressionNode,
-    #[postfix(token(TokenValue::Symbol(Symbol::RParen)))]
     pub clauses: ForIfClausesNode,
+    #[token(TokenValue::Symbol(Symbol::RParen))]
+    r: (),
 }
 
 #[node]
 pub struct DictCompNode {
     #[prefix(token(TokenValue::Symbol(Symbol::LBrace)))]
     pub kv_pair: KVPairNode,
-    #[postfix(token(TokenValue::Symbol(Symbol::RBrace)))]
     pub clauses: ForIfClausesNode,
+    #[token(TokenValue::Symbol(Symbol::RBrace))]
+    r: (),
 }
 
 // FUNCTION CALL ARGUMENTS
@@ -1966,12 +1992,12 @@ pub struct StarTargetsListSeq(
 #[node]
 pub enum StarTargetsTupleSeq {
     Multi(
-        Box<StarTargetNode>,
+        StarTargetNode,
         #[sep(TokenValue::Symbol(Symbol::Comma), trailing)]
         Vec<StarTargetNode>
     ),
     One(
-        Box<StarTargetNode>,
+        StarTargetNode,
         #[token(TokenValue::Symbol(Symbol::Comma))] ()
     )
 }
@@ -2000,7 +2026,7 @@ pub enum TargetWithStarAtomNode {
         #[fail_if(TokenValue::Symbol(Symbol::LParen | Symbol::LBracket | Symbol::Dot))] ()
     ),
     StarAtom(
-        StarAtomNode
+        Box<StarAtomNode>
     ),
 }
 
@@ -2009,17 +2035,17 @@ pub enum StarAtomNode {
     Name(#[token(TokenValue::Word(_))] Token),
     Expr(
         #[token(TokenValue::Symbol(Symbol::LParen))] (),
-        Box<TargetWithStarAtomNode>,
+        TargetWithStarAtomNode,
         #[token(TokenValue::Symbol(Symbol::RParen))] (),
     ),
     Tuple(
         #[token(TokenValue::Symbol(Symbol::LParen))] (),
-        StarTargetsTupleSeq,
+        Option<StarTargetsTupleSeq>,
         #[token(TokenValue::Symbol(Symbol::RParen))] (),
     ),
     List(
         #[token(TokenValue::Symbol(Symbol::LBracket))] (),
-        StarTargetsListSeq,
+        Option<StarTargetsListSeq>,
         #[token(TokenValue::Symbol(Symbol::RBracket))] (),
     ),
 }
@@ -2206,7 +2232,7 @@ pub enum DelTargetNode {
         #[token(TokenValue::Symbol(Symbol::RBracket))] (),
         #[fail_if(TokenValue::Symbol(Symbol::LParen | Symbol::LBracket | Symbol::Dot))] ()
     ),
-    Atom(DelTAtomNode),
+    Atom(Box<DelTAtomNode>),
 }
 
 #[node]
@@ -2214,7 +2240,7 @@ pub enum DelTAtomNode {
     Name(#[token(TokenValue::Word(_))] Token),
     Single(
         #[token(TokenValue::Symbol(Symbol::LParen))] (),
-        Box<DelTargetNode>,
+        DelTargetNode,
         #[token(TokenValue::Symbol(Symbol::RParen))] (),
     ),
     Tuple(
