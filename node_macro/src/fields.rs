@@ -1,6 +1,7 @@
+use std::collections::VecDeque;
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::{quote, ToTokens, TokenStreamExt};
-use syn::{parenthesized, Attribute, Field, Fields, GenericArgument, PathSegment, Token, Type};
+use syn::{parenthesized, Attribute, Expr, Field, Fields, GenericArgument, LitStr, PathSegment, Token, Type};
 use syn::parse::{Parse, ParseStream};
 use crate::data::PatWithGuard;
 use crate::PARSE_NAME;
@@ -38,7 +39,9 @@ pub struct FieldAttrs {
     pub prefix: Vec<TokenCheck>,
     pub postfix: Vec<TokenCheck>,
     pub pattern: Vec<TokenCheck>,
+    pub errors: Vec<ErrorArgs>,
 }
+
 
 #[derive(Debug)]
 pub enum FieldName {
@@ -59,6 +62,81 @@ pub struct SepAttr {
     pub token: PatWithGuard,
     pub trailing: bool,
 }
+
+#[derive(Debug, Clone)]
+pub struct ErrorArgs {
+    pub format_string: LitStr,
+    pub args: Vec<Expr>,
+}
+
+impl Parse for ErrorArgs {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let format_string: LitStr = input.parse()?;
+
+        let mut args = Vec::new();
+
+        if input.is_empty() {
+            return Ok(Self { format_string, args });
+        }
+
+        input.parse::<Token![,]>()?;
+
+        while !input.is_empty() {
+            args.push(input.parse::<Expr>()?);
+
+            if input.is_empty() {
+                break;
+            }
+
+            input.parse::<Token![,]>()?;
+        }
+
+        Ok(Self { format_string, args })
+    }
+}
+
+impl ToTokens for ErrorArgs {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        self.format_string.to_tokens(tokens);
+
+        for arg in &self.args {
+            tokens.extend(quote::quote! { , });
+            arg.to_tokens(tokens);
+        }
+    }
+}
+
+pub struct ErrorArgsList {
+    pub items: Vec<ErrorArgs>,
+}
+
+impl Parse for ErrorArgsList {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let mut items = Vec::new();
+
+        while !input.is_empty() {
+            let ident: Ident = input.parse()?;
+            if ident != "err" {
+                return Err(syn::Error::new_spanned(
+                    ident,
+                    "expected `err(...)`",
+                ));
+            }
+
+            let content;
+            parenthesized!(content in input);
+            items.push(content.parse::<ErrorArgs>()?);
+
+            if input.is_empty() {
+                break;
+            }
+            input.parse::<Token![,]>()?;
+        }
+
+        Ok(Self { items })
+    }
+}
+
 
 fn generic_arg_as_type(arg: &GenericArgument) -> Option<&Type> {
     match arg {
@@ -83,12 +161,13 @@ impl FieldMetadata {
         named: fn(Vec<Self>, A) -> T,
         unnamed: fn(Vec<Self>, A) -> T,
     ) -> syn::Result<T> {
+        let mut had_commit = false;
         match fields {
             Fields::Named(fields) => {
                 let (destructured, filtered) = fields.named
                     .iter().enumerate()
                     .map(|(i, field)| {
-                        FieldMetadata::destructure(i, field)
+                        FieldMetadata::destructure(i, field, &mut had_commit)
                     })
                     .collect::<syn::Result<(Vec<_>, Vec<_>)>>()?;
                 fields.named = filtered
@@ -102,7 +181,7 @@ impl FieldMetadata {
                 let (destructured, filtered) = fields.unnamed
                     .iter().enumerate()
                     .map(|(i, field)| {
-                        FieldMetadata::destructure(i, field)
+                        FieldMetadata::destructure(i, field, &mut had_commit)
                     })
                     .collect::<syn::Result<(Vec<_>, Vec<_>)>>()?;
                 fields.unnamed = filtered
@@ -145,7 +224,7 @@ impl FieldMetadata {
         }
     }
 
-    pub fn destructure(i: usize, field: &Field) -> syn::Result<(Self, Option<Field>)> {
+    pub fn destructure(i: usize, field: &Field, had_commit: &mut bool) -> syn::Result<(Self, Option<Field>)> {
         let mut field = field.clone();
         let name = match &field.ident {
             Some(i) => FieldName::Named(i.clone()),
@@ -195,7 +274,7 @@ impl FieldMetadata {
         };
 
 
-        let attrs = FieldAttrs::destructure(&mut field.attrs, ty)?;
+        let attrs = FieldAttrs::destructure(&mut field, ty, had_commit)?;
 
         let skip = attrs.skip;
         Ok((
@@ -217,13 +296,19 @@ impl FieldMetadata {
 
 impl FieldAttrs {
 
-    fn destructure(attrs: &mut Vec<Attribute>, ty: FieldType) -> syn::Result<Self> {
+    fn destructure(field: &mut Field, ty: FieldType, had_commit: &mut bool) -> syn::Result<Self> {
         let mut field_attrs = Self::default();
+
+        let mut error_count = 0;
 
         if matches!(ty, FieldType::Unit | FieldType::OptionUnit) {
             field_attrs.skip = true;
         }
 
+        field_attrs.commit = *had_commit;
+
+        let attrs = &mut field.attrs;
+        
         for attr in attrs.iter() {
             let p = attr.path();
             if p.is_ident("skip") {
@@ -245,7 +330,11 @@ impl FieldAttrs {
                     return Err(syn::Error::new_spanned(p, "one_or_more can only be applied to Vec types"))
                 }
             } else if p.is_ident("commit") {
+                if field_attrs.commit {
+                    return Err(syn::Error::new_spanned(p, "commit has already been defined for this field or a previous field"))
+                }
                 field_attrs.commit = true;
+                *had_commit = true;
             } else if p.is_ident("token") {
                 if matches!(ty,
                     FieldType::Token
@@ -299,12 +388,14 @@ impl FieldAttrs {
                 if !field_attrs.postfix.is_empty() {
                     return Err(syn::Error::new_spanned(attr, "prefix has already been defined"))
                 }
-                field_attrs.prefix = TokenCheck::parse_list(attr)?
+                let ec;
+                (field_attrs.prefix, ec) = TokenCheck::parse_list(attr)?
             } else if p.is_ident("postfix") {
                 if !field_attrs.postfix.is_empty() {
                     return Err(syn::Error::new_spanned(attr, "postfix has already been defined"))
                 }
-                field_attrs.prefix = TokenCheck::parse_list(attr)?
+                let ec;
+                (field_attrs.prefix, ec) = TokenCheck::parse_list(attr)?
 
             } else if p.is_ident("pattern") {
                 if matches!(ty, FieldType::Unit | FieldType::OptionUnit | FieldType::Bool) {
@@ -313,10 +404,18 @@ impl FieldAttrs {
                     } else if field_attrs.token.is_some() {
                         return Err(syn::Error::new_spanned(attr, "pattern is mutually exclusive to token/pass_if/fail_if"))
                     }
-                    field_attrs.pattern = TokenCheck::parse_list(attr)?;
+                    let ec;
+                    (field_attrs.pattern, ec) = TokenCheck::parse_list(attr)?;
                 } else {
                     return Err(syn::Error::new_spanned(attr, "pattern is only valid on Vec<Token>, (), Option<()>, and bool"))
                 }
+            } else if p.is_ident("errors") {
+                if !field_attrs.errors.is_empty() {
+                    return Err(syn::Error::new_spanned(attr, "errors has already been defined"))
+                }
+                let errors: ErrorArgsList = attr.parse_args()?;
+                field_attrs.errors = errors.items;
+
             }
         }
 
@@ -331,13 +430,47 @@ impl FieldAttrs {
                 || attr.path().is_ident("prefix")
                 || attr.path().is_ident("postfix")
                 || attr.path().is_ident("pattern")
+                || attr.path().is_ident("errors")
             )
         });
 
+        if field_attrs.commit {
+            for check in &field_attrs.prefix {
+                error_count += match check {
+                    TokenCheck::Token(_) | TokenCheck::PassIf(_) => 2,
+                    _ => 1
+                }
+            }
+            for check in &field_attrs.postfix {
+                error_count += match check {
+                    TokenCheck::Token(_) | TokenCheck::PassIf(_) => 2,
+                    _ => 1
+                }
+            }
+        }
+
         match ty {
+            FieldType::VecNode => {
+                if (field_attrs.sep.is_some() || field_attrs.one_or_more) && field_attrs.commit {
+                    error_count += 1;
+                }
+            }
+            FieldType::BoxNode => {
+                if field_attrs.commit {
+                    error_count += 1;
+                }
+            }
+            FieldType::Node => {
+                if field_attrs.commit {
+                    error_count += 1;
+                }
+            }
             FieldType::VecToken => {
                 if field_attrs.token.is_none() && field_attrs.pattern.is_empty() {
                     return Err(syn::Error::new(Span::call_site(), "Vec<Token> requires #[token(...)] or #[pattern(...)] attribute"))
+                }
+                if (field_attrs.sep.is_some() || field_attrs.one_or_more) && field_attrs.commit {
+                    error_count += 2;
                 }
             }
             FieldType::OptionToken => {
@@ -349,6 +482,9 @@ impl FieldAttrs {
                 if field_attrs.token.is_none() {
                     return Err(syn::Error::new(Span::call_site(), "Token requires #[token(...)] attribute"))
                 }
+                if field_attrs.commit {
+                    error_count += 2;
+                }
             }
             FieldType::OptionUnit => {
                 if field_attrs.token.is_none() && field_attrs.pattern.is_empty() {
@@ -359,6 +495,22 @@ impl FieldAttrs {
                 if field_attrs.token.is_none() && field_attrs.pattern.is_empty() {
                     return Err(syn::Error::new(Span::call_site(), "() requires #[token(...)], #[pass_if(...)], #[fail_if(...)], or #[pattern(...)] attribute"))
                 }
+
+                if field_attrs.commit {
+                    if let Some(check) = &field_attrs.token {
+                        error_count += match check {
+                            TokenCheck::Token(_) | TokenCheck::PassIf(_) => 2,
+                            _ => 1
+                        }
+                    } else {
+                        for p in &field_attrs.pattern {
+                            error_count += match p {
+                                TokenCheck::Token(_) | TokenCheck::PassIf(_) => 2,
+                                _ => 1
+                            }
+                        }
+                    }
+                }
             }
             FieldType::Bool => {
                 if field_attrs.token.is_none() && field_attrs.pattern.is_empty() {
@@ -366,6 +518,10 @@ impl FieldAttrs {
                 }
             }
             _ => {}
+        }
+
+        if error_count != field_attrs.errors.len() {
+            return Err(syn::Error::new_spanned(field, format!("Field requires {error_count} error messages due to existing attributes")))
         }
 
         Ok(field_attrs)
@@ -400,8 +556,9 @@ impl Parse for SepAttr {
 
 impl TokenCheck {
 
-    fn parse_list(attr: &Attribute) -> syn::Result<Vec<Self>> {
+    fn parse_list(attr: &Attribute) -> syn::Result<(Vec<Self>, usize)> {
         attr.parse_args_with(|input: ParseStream| {
+            let mut err_count = 0;
             let mut checks = Vec::new();
 
             loop {
@@ -423,8 +580,8 @@ impl TokenCheck {
                         parenthesized!(content in input);
                         let expr: PatWithGuard = content.parse()?;
 
-
                         checks.push(Self::Token(expr));
+                        err_count += 2;
                     } else if ident == "pass_if" {
                         if !input.peek(syn::token::Paren) {
                             return Err(syn::Error::new_spanned(
@@ -436,6 +593,7 @@ impl TokenCheck {
                         parenthesized!(content in input);
                         let expr: PatWithGuard = content.parse()?;
                         checks.push(Self::PassIf(expr));
+                        err_count += 2;
                     } else if ident == "fail_if" {
                         if !input.peek(syn::token::Paren) {
                             return Err(syn::Error::new_spanned(
@@ -447,6 +605,7 @@ impl TokenCheck {
                         parenthesized!(content in input);
                         let expr: PatWithGuard = content.parse()?;
                         checks.push(Self::FailIf(expr));
+                        err_count += 1;
                     } else {
                         let msg = format!(
                             "unknown check type '{}', expected one of: token, pass_if, fail_if",
@@ -468,7 +627,7 @@ impl TokenCheck {
                 }
             }
 
-            Ok(checks)
+            Ok((checks, err_count))
         })
     }
 
@@ -493,8 +652,10 @@ impl FieldMetadata {
 
         let mut body = TokenStream::new();
 
+        let mut errors: VecDeque<ErrorArgs> = self.attrs.errors.clone().into();
+
         for rule in &self.attrs.prefix {
-            rule.generate_parser(&mut body, *commit);
+            rule.generate_parser(&mut body, *commit, &mut errors);
             body.append_all(quote!(?;));
         }
 
@@ -514,6 +675,7 @@ impl FieldMetadata {
                                 Result::Ok(None) => break,
                                 Result::Err(e) => {
                                     tokens.restore();
+                                    tokens.restore();
                                     return Err(e)
                                 }
                             }
@@ -524,9 +686,10 @@ impl FieldMetadata {
                                 Result::Ok(Some(n)) => nodes.push(n),
                                 Result::Ok(None) => {
                                     tokens.restore();
-                                    return Err(anyhow!("Trailing {} not allowed", stringify!(#tk)))
+                                    break;
                                 },
                                 Result::Err(e) => {
+                                    tokens.restore();
                                     tokens.restore();
                                     return Err(e)
                                 }
@@ -535,7 +698,8 @@ impl FieldMetadata {
                     };
 
                     let else_br = if *commit {
-                        quote!(return Err(anyhow!("At least one instance of {} is required", stringify!(#cty))))
+                        let err0 = errors.pop_front().unwrap();
+                        quote!(return Err(anyhow!(#err0)))
 
                     } else {
                         quote!(return Ok(None))
@@ -556,17 +720,21 @@ impl FieldMetadata {
                             }
                         }
                         loop {
+                            tokens.snapshot();
                             if let Some(tk) = tokens.get(0) {
                                 if matches!(&tk.value, #tk) {
                                     tokens.consume_next();
                                 } else {
+                                    tokens.discard_snapshot();
                                     break
                                 }
                             } else {
+                                tokens.discard_snapshot();
                                 break
                             }
 
                             #node_parse
+                            tokens.discard_snapshot();
                         }
                         tokens.discard_snapshot();
                         Ok(Some(nodes))
@@ -574,8 +742,9 @@ impl FieldMetadata {
                 } else if self.attrs.one_or_more {
 
                     let else_behavior = if *commit {
+                        let err0 = errors.pop_front().unwrap();
                         quote! {
-                            return Err(anyhow!("At least one instance of {} is required", stringify!(#cty)))
+                            return Err(anyhow!(#err0))
                         }
                     } else {
                         quote! {
@@ -632,10 +801,11 @@ impl FieldMetadata {
             }
             FieldType::BoxNode => {
                 if *commit {
+                    let err0 = errors.pop_front().unwrap();
                     quote! {
                         match #cty::#parse(tokens, invalid_pass)? {
                             Some(n) => Ok(Some(Box::new(n))),
-                            None => Err(anyhow!("Failed to parse {}", stringify!(#cty)))
+                            None => Err(anyhow!(#err0))
                         }
                     }
                 } else {
@@ -650,10 +820,11 @@ impl FieldMetadata {
             }
             FieldType::Node => {
                 if *commit {
+                    let err0 = errors.pop_front().unwrap();
                     quote! {
                         match #cty::#parse(tokens, invalid_pass)? {
                             Some(n) => Ok(Some(n)),
-                            None => Err(anyhow!("Failed to parse {}", stringify!(#cty)))
+                            None => Err(anyhow!(#err0))
                         }
                     }
                 } else {
@@ -679,12 +850,14 @@ impl FieldMetadata {
                     let tk = &sep.token;
 
                     let (else_behavior, eof) = if *commit {
+                        let err0 = errors.pop_front().unwrap();
+                        let err1 = errors.pop_front().unwrap();
                         (
                             quote! {
-                                return Err(anyhow!("Expected at least one {}", stringify!(#token)))
+                                return Err(anyhow!(#err0))
                             },
                             quote! {
-                                return Err(anyhow!("Expected {}, got EOF", stringify!(#token)))
+                                return Err(anyhow!(#err1))
                             }
                         )
                     } else {
@@ -692,11 +865,9 @@ impl FieldMetadata {
                     };
 
                     let trail = if sep.trailing {
-                        quote!(break;)
+                        quote!(tokens.discard_snapshot();)
                     } else {
-                        quote! {
-                            return Err(anyhow!("Trailing {} not allowed", stringify!(#tk)))
-                        }
+                        quote!(tokens.restore();)
                     };
 
                     quote! {
@@ -711,13 +882,16 @@ impl FieldMetadata {
                             #eof
                         }
                         loop {
+                            tokens.snapshot();
                             if let Some(tk) = tokens.get(0) {
                                 if matches!(&tk.value, #tk) {
                                     tokens.consume_next();
                                 } else {
+                                    tokens.discard_snapshot();
                                     break;
                                 }
                             } else {
+                                tokens.discard_snapshot();
                                 break;
                             }
 
@@ -726,22 +900,27 @@ impl FieldMetadata {
                                     toks.push(tokens.consume_next().unwrap().clone())
                                 } else {
                                     #trail
+                                    break
                                 }
                             } else {
                                 #trail
+                                break
                             }
+                            tokens.discard_snapshot();
                         }
                         Ok(Some(toks))
                     }
                 } else if self.attrs.one_or_more {
 
                     let (else_behavior, eof) = if *commit {
+                        let err0 = errors.pop_front().unwrap();
+                        let err1 = errors.pop_front().unwrap();
                         (
                             quote! {
-                                return Err(anyhow!("Expected at least one {}", stringify!(#token)))
+                                return Err(anyhow!(#err0))
                             },
                             quote! {
-                                return Err(anyhow!("Expected {}, got EOF", stringify!(#token)))
+                                return Err(anyhow!(#err1))
                             }
                         )
                     } else {
@@ -815,9 +994,11 @@ impl FieldMetadata {
                 match self.attrs.token.as_ref().unwrap() {
                     TokenCheck::Token(t) => {
                         let (a, b) = if *commit {
+                            let err0 = errors.pop_front().unwrap();
+                            let err1 = errors.pop_front().unwrap();
                             (
-                                quote! {Err(anyhow!("Failed to parse Token"))},
-                                quote! {Err(anyhow!("Unexpected EOF while parsing Token"))},
+                                quote! {Err(anyhow!(#err0))},
+                                quote! {Err(anyhow!(#err1))},
                             )
                         } else {
                             (
@@ -858,7 +1039,7 @@ impl FieldMetadata {
 
                     let mut checks = TokenStream::new();
                     for check in &self.attrs.pattern {
-                        check.generate_parser(&mut checks, false);
+                        check.generate_parser(&mut checks, false, &mut errors);
                     }
 
                     quote! {
@@ -875,13 +1056,13 @@ impl FieldMetadata {
                 if let Some(check) = &self.attrs.token {
 
                     let mut out = TokenStream::new();
-                    check.generate_parser(&mut out, *commit);
+                    check.generate_parser(&mut out, *commit, &mut errors);
                     out
 
                 } else {
                     let mut checks = TokenStream::new();
                     for check in &self.attrs.pattern {
-                        check.generate_parser(&mut checks, false);
+                        check.generate_parser(&mut checks, false, &mut errors);
                         checks.append_all(quote!(?;));
                     }
 
@@ -915,7 +1096,7 @@ impl FieldMetadata {
 
                     let mut checks = TokenStream::new();
                     for check in &self.attrs.pattern {
-                        check.generate_parser(&mut checks, false);
+                        check.generate_parser(&mut checks, false, &mut errors);
                     }
 
                     quote! {
@@ -934,7 +1115,7 @@ impl FieldMetadata {
         });
 
         for rule in &self.attrs.postfix {
-            rule.generate_parser(&mut body, *commit);
+            rule.generate_parser(&mut body, *commit, &mut errors);
             body.append_all(quote!(?;));
         }
 
@@ -976,21 +1157,22 @@ impl FieldMetadata {
 }
 
 impl TokenCheck {
-    fn generate_parser(&self, tokens: &mut TokenStream, commit: bool) {
+    fn generate_parser(&self, tokens: &mut TokenStream, commit: bool, errors: &mut VecDeque<ErrorArgs>) {
         tokens.append_all(match self {
             Self::Token(t) => {
                 if commit {
-
+                    let err0 = errors.pop_front().unwrap();
+                    let err1 = errors.pop_front().unwrap();
                     quote! {
                         if let Some(tk) = tokens.get(0) {
                             if matches!(&tk.value, #t) {
                                 Ok(Some(tokens.consume_next().unwrap().clone()))
                             } else {
-                                return Err(anyhow!("token didn't match"))
+                                return Err(anyhow!(#err0))
                             }
                         } else {
                             tokens.restore();
-                            return Err(anyhow!("Unexpected EOF while parsing token"))
+                            return Err(anyhow!(#err1))
                         }
                     }
                 } else {
@@ -1012,15 +1194,17 @@ impl TokenCheck {
             Self::PassIf(p) => {
                 if commit {
 
+                    let err0 = errors.pop_front().unwrap();
+                    let err1 = errors.pop_front().unwrap();
                     quote! {
                         if let Some(tk) = tokens.get(0) {
                             if matches!(&tk.value, #p) {
                                 Ok(Some(true))
                             } else {
-                                return Err(anyhow!("token didn't match"))
+                                return Err(anyhow!(#err0))
                             }
                         } else {
-                            return Err(anyhow!("Unexpected EOF while parsing token"))
+                            return Err(anyhow!(#err1))
                         }
                     }
                 } else {
@@ -1040,11 +1224,11 @@ impl TokenCheck {
             }
             Self::FailIf(f) => {
                 if commit {
-
+                    let err = errors.pop_front().unwrap();
                     quote! {
                         if let Some(tk) = tokens.get(0) {
                             if matches!(&tk.value, #f) {
-                                return Err(anyhow!("token matched"))
+                                return Err(anyhow!(#err))
                             } else {
                                 Ok(Some(()))
                             }

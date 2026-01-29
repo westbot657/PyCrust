@@ -10,9 +10,6 @@ where
     fn parse_debug(tokens: &mut ParseTokens, invalid_pass: bool) -> Result<Option<Self>> {
         let x = Self::parse(tokens, invalid_pass)?;
         let name = std::any::type_name::<Self>();
-        // if name == "pycrust::parser::node::StatementNode" {
-        //     println!("Parsed node {name}: {x:?}");
-        // }
         Ok(x)
     }
     fn parse(tokens: &mut ParseTokens, invalid_pass: bool) -> Result<Option<Self>>;
@@ -128,6 +125,7 @@ pub enum AssignmentNode {
         #[token(TokenValue::AssignOperator(_))]
         operator: Token,
         #[commit]
+        #[errors(err("Expected expression after {operator}"))]
         value: AnnotatedRhsNode
     },
 }
@@ -654,8 +652,14 @@ pub struct ForStmtNode {
     #[token(TokenValue::Keyword(Keyword::In))]
     pub in_token: Token,
     #[commit]
+    #[errors(err("expected value to iterate over after {in_token}"))]
     pub star_expr: StarExpressionsNode,
     #[prefix(token(TokenValue::Symbol(Symbol::Colon)))]
+    #[errors(
+        err("Expected ':', got {}", tokens.get(0).unwrap()),
+        err("Expected ':', got EOF"),
+        err("Expected block after for ... in ...: @ {}", for_token.span),
+    )]
     pub block: BlockNode,
     pub else_block: Option<ElseBlockNode>,
 }
@@ -1334,6 +1338,7 @@ pub struct AssignmentExpressionNode {
     #[token(TokenValue::Symbol(Symbol::Walrus))]
     w: (),
     #[commit]
+    #[errors(err("Expected ':=' after {name}"))]
     pub expr: ExpressionNode,
 }
 
@@ -1938,6 +1943,7 @@ pub struct ForIfClauseNode {
     #[token(TokenValue::Keyword(Keyword::In))]
     pub in_token: Token,
     #[commit]
+    #[errors(err("Expected value to iterate over after {in_token}"))]
     pub iter: DisjunctionNode,
     pub guards: Vec<ForIfClauseNodeGuardsInner>,
 }
