@@ -30,7 +30,7 @@ pub fn test_unescape() -> Result<()> {
 #[test]
 pub fn test_lexer() -> Result<()> {
 
-    let source = include_str!("../../test_scripts/lexer_test.py").to_string();
+    let source = include_str!("../test_scripts/lexer_test.py").to_string();
 
 
     let mut lexer = Lexer::new("<python-test>".to_string(), source);
@@ -45,7 +45,7 @@ pub fn test_lexer() -> Result<()> {
 #[test]
 pub fn test_parser() -> Result<()> {
 
-    let source = include_str!("../../test_scripts/lexer_test.py").to_string();
+    let source = include_str!("../test_scripts/lexer_test.py").to_string();
 
     // let source = "f'{self.a, self.b=:{self.c}}'\n".to_string();
 

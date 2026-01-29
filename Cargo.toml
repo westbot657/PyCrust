@@ -6,6 +6,9 @@ description = "A sandboxed python interpreter (and soon to be compiler)"
 license = "MIT"
 readme = "README.md"
 
+[lib]
+crate-type = ["lib", "cdylib"]
+
 [features]
 default = ["lexer", "parser", "interpreter"]
 lexer = ["dep:regex"]
