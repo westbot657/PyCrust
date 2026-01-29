@@ -428,9 +428,15 @@ impl Display for PartialFString {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             PartialFString::StringContent(s) => write!(f, "[[{s:?}]]::str"),
-            PartialFString::TokenStream(t, spec) => write!(f, "[[\n{t}\n]]:(\n{}\n)::expression",
-                spec.iter().map(|t| t.to_string()).collect::<Vec<String>>().join(",\n")
-            )
+            PartialFString::TokenStream(t, spec) => {
+                write!(f,
+                    "{}",
+                    format!(
+                        "[[\n{t}\r]]:(\n{}\r)::expression",
+                        spec.iter().map(|t| t.to_string()).collect::<Vec<String>>().join(",\n")
+                    ).replace("\n", "\n    ").replace("\r", "\n")
+                )
+            }
         }
     }
 }
@@ -461,7 +467,24 @@ impl Display for TokenValue {
             TokenValue::BooleanLiteral(_) => write!(f, "boolean-literal"),
             TokenValue::NumberLiteral(_) => write!(f, "number-literal"),
             TokenValue::Comment(_) => write!(f, "comment"),
-            TokenValue::FString(parts) => write!(f, "{{\n{}\n}}::f-string", parts.iter().map(|p| p.to_string()).collect::<Vec<String>>().join(",\n")),
+            TokenValue::FString(parts) => {
+                write!(f,
+                       "{{\n    {}\n}}::f-string",
+                       parts
+                           .iter()
+                           .map(
+                               |p| p.to_string()
+                                   .split("\n")
+                                   .map(|s|
+                                       s.to_string()
+                                   )
+                                   .collect::<Vec<String>>()
+                                   .join("\n    ")
+                           )
+                           .collect::<Vec<String>>()
+                           .join(",\n    ")
+                )
+            }
             TokenValue::LeadingWhitespace => write!(f, "leading-whitespace"),
             TokenValue::Indent => write!(f, "INDENT"),
             TokenValue::Dedent => write!(f, "DEDENT"),
@@ -540,6 +563,7 @@ impl Display for Tokens {
     }
 }
 
+#[derive(Debug)]
 pub struct ParseTokens {
     offset: usize,
     tokens: Vec<Token>,
@@ -581,7 +605,7 @@ impl ParseTokens {
     }
     
     pub fn is_empty(&self) -> bool {
-        self.tokens.len() - self.offset == 0
+        self.tokens.len() == self.offset
     }
     
 }

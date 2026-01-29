@@ -47,7 +47,7 @@ pub fn test_parser() -> Result<()> {
 
     // let source = include_str!("../../test_scripts/lexer_test.py").to_string();
 
-    let source = "print([0x_FF, 0b_01, -0o_67, 1., -.1, 1e1, 1e1_1, 1_1e1, 15j, -1.2e+10, 1.2e-10, 1.e1, -1-13j])\n".to_string();
+    let source = "f'{self.a, self.b=:{self.c}}'\n".to_string();
 
     let mut lexer = Lexer::new("<python-test>".to_string(), source);
 

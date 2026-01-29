@@ -11,7 +11,7 @@ class TestClass:
         print([0x_FF, 0b_01, -0o_67, 1., -.1, 1e1, 1e1_1, 1_1e1, 15j, -1.2e+10, 1.2e-10, 1.e1, -1-13j])
 
     def __repr__(self):
-        return f"test {self.a, self.b=:{self.c}} class\U0002F313ad\u1Ee798347\x23794\8\0123\767\N{POTATO}\
+        return f"test {(self.a, self.b)=:{self.c}} class\U0002F313ad\u1Ee798347\x23794\8\0123\767\N{POTATO}\
         poasoidjoasnd" "implicit concat" \
         "concat 2"
 

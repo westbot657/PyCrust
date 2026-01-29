@@ -1779,7 +1779,91 @@ pub struct LambdaParamNode {
 // LITERALS
 // ========
 #[node] // TODO: parse f-string internals
-pub struct StringsNode(#[token(TokenValue::StringLiteral(_))] pub Token);
+pub enum StringsNode{
+    Literal(#[token(TokenValue::StringLiteral(_))] Token),
+    FString(FStringInternal),
+}
+
+#[derive(Debug)]
+pub enum FStringInternalPart {
+    StringContent(String),
+    AnnotatedRhsNode(AnnotatedRhsNode, Vec<FStringInternalPart>)
+}
+impl FStringInternalPart {
+    fn parse_partial(partial: &PartialFString, invalid_pass: bool) -> Result<Self> {
+        match partial {
+            PartialFString::StringContent(s) => {
+                Ok(Self::StringContent(s.clone()))
+            }
+            PartialFString::TokenStream(toks, spec) => {
+                let mut toks = toks.clone().into_parse_tokens();
+                match AnnotatedRhsNode::parse(&mut toks, invalid_pass) {
+                    Result::Ok(Some(n)) => {
+                        let mut parts = Vec::new();
+                        for s in spec {
+                            match FStringInternalPart::parse_partial(s, invalid_pass) {
+                                Result::Ok(p) => {
+                                    parts.push(p)
+                                }
+                                Result::Err(e) => {
+                                    return Err(e)
+                                }
+                            }
+                        }
+                        Ok(Self::AnnotatedRhsNode(n, parts))
+
+                    }
+                    Result::Ok(None) => {
+                        Err(anyhow!("Invalid syntax in f-string expression"))
+                    }
+                    Err(e) => {
+                        Err(e)
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+#[derive(Debug)]
+pub struct FStringInternal {
+    token: Token,
+    parts: Vec<FStringInternalPart>
+}
+impl Node for FStringInternal {
+    fn parse(tokens: &mut ParseTokens, invalid_pass: bool) -> Result<Option<Self>> {
+        tokens.snapshot();
+        if let Some(t) = tokens.consume_next() {
+            let t = t.clone();
+            if !matches!(&t.value, TokenValue::FString(_)) {
+                tokens.restore();
+                return Ok(None)
+            }
+            let fstr = match &t.value {
+                TokenValue::FString(f) => f,
+                _ => unreachable!()
+            };
+            let mut parts = Vec::new();
+            for f in fstr {
+                match FStringInternalPart::parse_partial(f, invalid_pass) {
+                    Result::Ok(p) => {
+                        parts.push(p)
+                    }
+                    Result::Err(e) => {
+                        tokens.restore();
+                        return Err(e)
+                    }
+                }
+            }
+            tokens.discard_snapshot();
+            Ok(Some(Self { token: t, parts }))
+        } else {
+            tokens.restore();
+            Ok(None)
+        }
+    }
+}
 
 #[node]
 pub struct ListNode(
