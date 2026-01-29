@@ -1783,7 +1783,7 @@ pub struct LambdaParamNode {
 
 // LITERALS
 // ========
-#[node] // TODO: parse f-string internals
+#[node]
 pub enum StringsNode{
     Literal(#[token(TokenValue::StringLiteral(_))] Token),
     FString(FStringInternal),
