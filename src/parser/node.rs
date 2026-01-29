@@ -9,7 +9,6 @@ where
 {
     fn parse_debug(tokens: &mut ParseTokens, invalid_pass: bool) -> Result<Option<Self>> {
         let x = Self::parse(tokens, invalid_pass)?;
-        let name = std::any::type_name::<Self>();
         Ok(x)
     }
     fn parse(tokens: &mut ParseTokens, invalid_pass: bool) -> Result<Option<Self>>;
@@ -1660,7 +1659,7 @@ pub enum GroupNodeInner {
 #[node]
 pub struct GroupNode(
     #[token(TokenValue::Symbol(Symbol::LParen))] (),
-    GroupNodeInner,
+    pub GroupNodeInner,
     #[token(TokenValue::Symbol(Symbol::RParen))] (),
 );
 
@@ -1833,8 +1832,8 @@ impl FStringInternalPart {
 
 #[derive(Debug)]
 pub struct FStringInternal {
-    token: Token,
-    parts: Vec<FStringInternalPart>
+    pub token: Token,
+    pub parts: Vec<FStringInternalPart>
 }
 impl Node for FStringInternal {
     fn parse(tokens: &mut ParseTokens, invalid_pass: bool) -> Result<Option<Self>> {
