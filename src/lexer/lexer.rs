@@ -158,6 +158,7 @@ impl Lexer {
         self.tokens = self.lex_normal(&source, &mut context, 0, false)?;
 
         self.cleanup_tokens()?;
+        self.cleanup_tokens()?; // run again to do anything else that was blocked by say, line continuations between strings
 
         self.tokens.push(Token::new(TokenValue::EndMarker, self.position.span_to(&self.position), ""));
 
@@ -258,10 +259,11 @@ impl Lexer {
                     };
                     match n {
                         Token { value: TokenValue::LeadingWhitespace, .. } => {
-                            if Self::clip_leading_whitespace(n) {
-                                tokens.push(Token::new(TokenValue::Newline, n.span.clone(), "\n"));
-                                self.handle_indentation(n, &mut indentation, &mut tokens)?
-                            }
+                            iter.next();
+                            // if Self::clip_leading_whitespace(n) {
+                            //     tokens.push(Token::new(TokenValue::Newline, n.span.clone(), "\n"));
+                            //     self.handle_indentation(n, &mut indentation, &mut tokens)?
+                            // }
                         }
                         _ => return Err(anyhow!("Expected newline after '\\', got token: {n:?}" ))
                     }

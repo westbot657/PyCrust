@@ -45,20 +45,22 @@ pub fn test_lexer() -> Result<()> {
 #[test]
 pub fn test_parser() -> Result<()> {
 
-    // let source = include_str!("../../test_scripts/lexer_test.py").to_string();
+    let source = include_str!("../../test_scripts/lexer_test.py").to_string();
 
-    let source = "f'{self.a, self.b=:{self.c}}'\n".to_string();
+    // let source = "f'{self.a, self.b=:{self.c}}'\n".to_string();
 
     let mut lexer = Lexer::new("<python-test>".to_string(), source);
 
     lexer.tokenize()?;
-    // println!("output tokens: {}", lexer.get_tokens());
+    println!("output tokens: {}", lexer.get_tokens());
 
     let mut tokens = lexer.to_tokens().into_parse_tokens();
 
     let ast = FileNode::parse_debug(&mut tokens, false)?;
 
-    println!("Output AST: {ast:#?}");
+    // println!("Output AST: {ast:#?}");
+
+    std::fs::write("./test_scripts/out.txt", format!("{ast:#?}"))?;
 
     Ok(())
 
