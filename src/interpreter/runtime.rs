@@ -1,3 +1,4 @@
+use num_bigint::BigInt;
 use crate::core::types::Operator;
 
 
@@ -59,6 +60,7 @@ pub type CellIndex = u32;
 pub enum ConstantValue {
     I64(i64),
     F64(f64),
+    BigInt(BigInt),
     Bool(bool),
     String(String),
     None,

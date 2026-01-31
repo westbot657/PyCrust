@@ -1,7 +1,9 @@
+use num_traits::Num;
 use std::collections::VecDeque;
 use std::mem;
 use crate::core::types::{Comparator, Keyword, Number, NumericValue, Operator, PartialFString, Symbol, TextPosition, TextSpan, Token, TokenValue, Tokens};
 use anyhow::{anyhow, Result};
+use num_bigint::BigInt;
 use regex::Regex;
 use crate::lexer::unescape::unescape;
 
@@ -392,22 +394,34 @@ impl Lexer {
             else if let Some(number) = number_re.captures(code) {
                 let raw_txt = &code[number.get(0).unwrap().range()];
                 self.position.advance(raw_txt);
-                let num_txt = (raw_txt).replace("_", "");
+                let num_txt = raw_txt.replace("_", "");
 
                 let val = if let Some(bin) = binary_num_re.captures(&num_txt) {
                     let raw = bin.name("bin").unwrap().as_str();
-                    let num = i64::from_str_radix(raw, 2)?;
-                    Token::new(TokenValue::NumberLiteral(Number::Real(NumericValue::I64(num))), pos.span_to(&self.position), raw_txt)
+                    if let Ok(num) = i64::from_str_radix(raw, 2) {
+                        Token::new(TokenValue::NumberLiteral(Number::Real(NumericValue::I64(num))), pos.span_to(&self.position), raw_txt)
+                    } else {
+                        let num = BigInt::from_str_radix(raw, 2)?;
+                        Token::new(TokenValue::NumberLiteral(Number::Real(NumericValue::BigInt(num))), pos.span_to(&self.position), raw_txt)
+                    }
                 }
                 else if let Some(oct) = octal_num_re.captures(&num_txt) {
                     let raw = oct.name("oct").unwrap().as_str();
-                    let num = i64::from_str_radix(raw, 8)?;
-                    Token::new(TokenValue::NumberLiteral(Number::Real(NumericValue::I64(num))), pos.span_to(&self.position), raw_txt)
+                    if let Ok(num) = i64::from_str_radix(raw, 8) {
+                        Token::new(TokenValue::NumberLiteral(Number::Real(NumericValue::I64(num))), pos.span_to(&self.position), raw_txt)
+                    } else {
+                        let num = BigInt::from_str_radix(raw, 8)?;
+                        Token::new(TokenValue::NumberLiteral(Number::Real(NumericValue::BigInt(num))), pos.span_to(&self.position), raw_txt)
+                    }
                 }
                 else if let Some(hex) = hex_num_re.captures(&num_txt) {
                     let raw = hex.name("hex").unwrap().as_str();
-                    let num = i64::from_str_radix(raw, 16)?;
-                    Token::new(TokenValue::NumberLiteral(Number::Real(NumericValue::I64(num))), pos.span_to(&self.position), raw_txt)
+                    if let Ok(num) = i64::from_str_radix(raw, 16) {
+                        Token::new(TokenValue::NumberLiteral(Number::Real(NumericValue::I64(num))), pos.span_to(&self.position), raw_txt)
+                    } else {
+                        let num = BigInt::from_str_radix(raw, 16)?;
+                        Token::new(TokenValue::NumberLiteral(Number::Real(NumericValue::BigInt(num))), pos.span_to(&self.position), raw_txt)
+                    }
                 }
                 else if let Some(num) = numeric_re.captures(&num_txt) {
                     let real = num.name("real").unwrap().as_str();

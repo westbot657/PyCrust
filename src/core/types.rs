@@ -3,6 +3,8 @@ use std::iter::Peekable;
 use std::ops::MulAssign;
 use std::slice::Iter;
 use std::vec::IntoIter;
+use num_bigint::BigInt;
+use num_traits::{FromPrimitive, ToPrimitive};
 
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serial", derive(serde::Serialize, serde::Deserialize))]
@@ -190,6 +192,7 @@ pub enum Operator {
 pub enum NumericValue {
     I64(i64),
     F64(f64),
+    BigInt(BigInt),
 }
 
 impl From<i64> for NumericValue {
@@ -207,10 +210,18 @@ impl From<f64> for NumericValue {
 impl MulAssign<NumericValue> for NumericValue {
     fn mul_assign(&mut self, rhs: NumericValue) {
         match (&self, rhs) {
-            (NumericValue::I64(i), NumericValue::I64(i2)) => *self = NumericValue::I64(*i * i2),
-            (NumericValue::I64(i), NumericValue::F64(f2)) => *self = NumericValue::F64(*i as f64 * f2),
-            (NumericValue::F64(f), NumericValue::I64(i2)) => *self = NumericValue::F64(*f * i2 as f64),
-            (NumericValue::F64(f), NumericValue::F64(f2)) => *self = NumericValue::F64(*f * f2),
+            (Self::I64(i), Self::I64(i2)) => *self = match i.checked_mul(i2) {
+                Some(r) => Self::I64(r),
+                None => Self::BigInt(BigInt::from_i64(*i).unwrap() * i2)
+            },
+            (Self::I64(i), Self::F64(f2)) => *self = Self::F64(*i as f64 * f2),
+            (Self::I64(i), Self::BigInt(b2)) => *self = Self::BigInt(b2 * *i),
+            (Self::F64(f), Self::I64(i2)) => *self = Self::F64(*f * i2 as f64),
+            (Self::F64(f), Self::F64(f2)) => *self = Self::F64(*f * f2),
+            (Self::F64(f), Self::BigInt(b2)) => *self = Self::F64(*f * b2.to_f64().unwrap()),
+            (Self::BigInt(b), Self::BigInt(b2)) => *self = Self::BigInt(b * b2),
+            (Self::BigInt(b), Self::I64(i)) => *self = Self::BigInt(b * i),
+            (Self::BigInt(b), Self::F64(f2)) => *self = Self::F64(b.to_f64().unwrap() * f2)
         }
     }
 }
@@ -218,8 +229,9 @@ impl MulAssign<NumericValue> for NumericValue {
 impl MulAssign<f64> for NumericValue {
     fn mul_assign(&mut self, rhs: f64) {
         match &self {
-            NumericValue::I64(i) => *self = NumericValue::F64(*i as f64 * rhs),
-            NumericValue::F64(f) => *self = NumericValue::F64(*f * rhs),
+            Self::I64(i) => *self = Self::F64(*i as f64 * rhs),
+            Self::F64(f) => *self = Self::F64(*f * rhs),
+            Self::BigInt(b) => *self = Self::F64(b.to_f64().unwrap() * rhs),
         }
     }
 }
@@ -227,8 +239,12 @@ impl MulAssign<f64> for NumericValue {
 impl MulAssign<i64> for NumericValue {
     fn mul_assign(&mut self, rhs: i64) {
         match &self {
-            NumericValue::I64(i) => *self = NumericValue::I64(*i * rhs),
-            NumericValue::F64(f) => *self = NumericValue::F64(*f * rhs as f64)
+            Self::I64(i) => *self = match i.checked_mul(rhs) {
+                Some(r) => Self::I64(r),
+                None => Self::BigInt(BigInt::from_i64(*i).unwrap() * rhs)
+            },
+            Self::F64(f) => *self = Self::F64(*f * rhs as f64),
+            Self::BigInt(b) => *self = Self::BigInt(b * rhs),
         }
     }
 }
