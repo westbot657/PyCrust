@@ -1,6 +1,6 @@
 use num_bigint::BigInt;
 use crate::core::types::Operator;
-
+use crate::interpreter::data::PyObjectRef;
 
 pub enum Comp {
     Lt,
@@ -65,7 +65,7 @@ pub enum ConstantValue {
     Bool(bool),
     String(String),
     None,
-
+    Code(Box<CodeBlock>),
 }
 
 
@@ -153,7 +153,7 @@ pub enum OpCode {
     ImportFrom(NameIndex),
     ImportStar,
 
-    LoadBuildClass, // load __build_class__ builtin
+    LoadBuildClass,             // load __build_class__ builtin
     SetupAnnotations,
 
     FormatValue(FormatFlags),
@@ -161,17 +161,33 @@ pub enum OpCode {
     MatchSequence,              // is top item a sequence-like object
     MatchMapping,               // is top item a mapping object
     MatchKeys,                  // is top item's (key tuple) keys are all in top-1's keys
-    MatchClass(u32), // argc
-    CopyDictFiltered, // [..., dict, keys_tuple] -> [..., new_dict] // removes keys in keys_tuple from dict
+    MatchClass(u32),            // argc
+    CopyDictFiltered,           // [..., dict, keys_tuple] -> [..., new_dict] // removes keys in keys_tuple from dict
     GetLen,
 
+}
 
 
+pub struct CodeBlock {
+    /// executable op codes
+    instructions: Vec<OpCode>,
+    /// constant values that aren't python objects
+    constants: Vec<ConstantValue>,
+    /// list of all names that appear in the code block
+    names: Vec<String>,
+    /// list of references to local python objects
+    locals: Vec<PyObjectRef>,
+    /// list of references to celled python objects
+    cells: Vec<PyObjectRef>,
 }
 
 
 
 
+pub struct PyRuntime {
+    code: CodeBlock,
+
+}
 
 
 
