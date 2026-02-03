@@ -15,7 +15,7 @@ lexer = ["dep:regex", "dep:num-bigint"]
 parser = ["lexer"]
 interpreter = ["lexer", "parser", "dep:slotmap", "dep:indexmap"]
 compiler = ["lexer", "parser"]
-serial = ["dep:serde", "dep:serde_json"]
+serial = ["dep:serde", "dep:serde_json", "num-bigint/serde"]
 named-unicode = ["dep:unicode_names2"]
 
 

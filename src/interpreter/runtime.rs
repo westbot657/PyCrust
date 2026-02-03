@@ -55,6 +55,7 @@ pub type Label = u32;
 pub type NameIndex = u32;
 pub type LocalIndex = u32;
 pub type CellIndex = u32;
+pub type ConstIndex = u32;
 
 
 pub enum ConstantValue {
@@ -75,6 +76,7 @@ pub enum OpCode {
     DupTwo,                     // duplicate top 2 stack items
     Rot(u8),                    // move item at n-1 to top
 
+    LoadConst(ConstIndex),      // load constant value
     LoadGlobal(NameIndex),      // global table
     StoreGlobal(NameIndex),     // global table
     DeleteGlobal(NameIndex),    // global table
