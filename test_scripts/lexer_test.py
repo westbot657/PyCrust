@@ -19,6 +19,18 @@ def main():
     t = TestClass("Hello!", 123_456, 123_456.789_0, {"idk": 4}, [2.3, 4.5, 6.0, .3])
     print(t)
 
+    def potato():
+        print("potato")
+
+    def gen():
+        for i in range(10):
+            yield i * 5
+
+    for x in gen():
+        print(f"x is {x}")
+
+    potato()
+
     x = 6
 
     if (
